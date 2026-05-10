@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using GraphProcessor;
 using UnityEditor;
 using UnityEditor.Experimental.GraphView;
@@ -11,6 +12,11 @@ namespace CustomVisualScripting.Editor.Nodes.Views
 {
     public sealed class FilteredCreateMenuBaseGraphView : BaseGraphView
     {
+        static readonly MethodInfo s_baseReloadView =
+            typeof(BaseGraphView).GetMethod("ReloadView", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        Undo.UndoRedoCallback _registeredSafeUndoHandler;
+
         bool _pendingPostGraphChromeFix;
         private int _previousSelectedCount = 0;
 
@@ -19,6 +25,8 @@ namespace CustomVisualScripting.Editor.Nodes.Views
 
         public FilteredCreateMenuBaseGraphView(EditorWindow window) : base(window)
         {
+            ReplaceBaseGraphViewUndoHandlerWithNullSafeWrapper();
+
             var previousGraphViewChanged = graphViewChanged;
             graphViewChanged = change =>
             {
@@ -38,6 +46,53 @@ namespace CustomVisualScripting.Editor.Nodes.Views
                     RefreshAllOutlines();
                 }
             }).Every(50);
+        }
+
+        /// <summary>
+        /// BaseGraphView подписывает приватный <see cref="ReloadView"/> на глобальный Undo.
+        /// После уничтожения временного <see cref="BaseGraph"/> (вложенные SubGraphPanel) или при race на Undo,
+        /// <c>ReloadView</c> вызывает <c>new SerializedObject(graph)</c> при <c>graph == null</c> и падает.
+        /// Снимаем исходный делегат и подставляем обёртку.
+        /// </summary>
+        void ReplaceBaseGraphViewUndoHandlerWithNullSafeWrapper()
+        {
+            if (s_baseReloadView == null)
+                return;
+
+            Undo.UndoRedoCallback original;
+            try
+            {
+                original = (Undo.UndoRedoCallback)Delegate.CreateDelegate(typeof(Undo.UndoRedoCallback), this,
+                    s_baseReloadView);
+            }
+            catch (ArgumentException)
+            {
+                return;
+            }
+
+            Undo.undoRedoPerformed -= original;
+            _registeredSafeUndoHandler = SafeUndoRedoPerformed;
+            Undo.undoRedoPerformed += _registeredSafeUndoHandler;
+        }
+
+        void SafeUndoRedoPerformed()
+        {
+            if (graph == null)
+                return;
+
+            s_baseReloadView?.Invoke(this, null);
+        }
+
+        /// <summary>Снимает безопасный Undo handler до <see cref="BaseGraphView.Dispose"/>.</summary>
+        public new void Dispose()
+        {
+            if (_registeredSafeUndoHandler != null)
+            {
+                Undo.undoRedoPerformed -= _registeredSafeUndoHandler;
+                _registeredSafeUndoHandler = null;
+            }
+
+            base.Dispose();
         }
 
         private void RefreshAllOutlines()

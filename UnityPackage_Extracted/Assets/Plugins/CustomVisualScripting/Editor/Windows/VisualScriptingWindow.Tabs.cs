@@ -9,10 +9,10 @@ using CustomVisualScripting.Editor.Nodes.Flow;
 using CustomVisualScripting.Editor.Nodes.Literals;
 using CustomVisualScripting.Editor.Nodes.Views;
 using UnityEditor;
-using UnityEditor.Experimental.GraphView;
 using UnityEngine;
 using UnityEngine.UIElements;
 using VisualScripting.Core.Models;
+using CustomVisualScripting.Editor;
 
 namespace CustomVisualScripting.Editor.Windows
 {
@@ -114,8 +114,23 @@ namespace CustomVisualScripting.Editor.Windows
 
         private void ActivateTab(string tabId)
         {
+            var previousTabId = _activeTabId;
+            if (!string.Equals(previousTabId, tabId, StringComparison.Ordinal))
+            {
+                if (!string.Equals(previousTabId, FileTabId, StringComparison.Ordinal) &&
+                    _subspaceRuntimes.TryGetValue(previousTabId, out var leavingRuntime))
+                    SyncSubspaceRuntime(leavingRuntime);
+            }
+
             _activeTabId = tabId;
             RenderTabs();
+
+            var switchedToTab = !string.Equals(previousTabId, tabId, StringComparison.Ordinal);
+            if (!string.Equals(tabId, FileTabId, StringComparison.Ordinal) &&
+                _subspaceRuntimes.ContainsKey(tabId) &&
+                switchedToTab)
+                RebuildSubspaceRuntimeGraph(tabId);
+
             DisplayActiveTabContent();
         }
 
@@ -160,7 +175,7 @@ namespace CustomVisualScripting.Editor.Windows
             var tabId = $"{nodeId}:{subspaceKind.ToString().ToLowerInvariant()}";
             var existing = _tabs.FirstOrDefault(t => string.Equals(t.Id, tabId, StringComparison.Ordinal));
             if (existing != null) return existing;
-            var nodeData = FindNodeData(nodeId);
+            var nodeData = FindNodeDataOrSyncFromView(nodeId);
             if (nodeData == null) return null;
             var descriptor = new TabDescriptor
             {
@@ -180,11 +195,14 @@ namespace CustomVisualScripting.Editor.Windows
             var nodeName = string.IsNullOrWhiteSpace(nodeData?.VariableName)
                 ? nodeData?.Type.ToString()
                 : nodeData.VariableName;
-            return $"{nodeName} - {GetSubspaceDisplayName(subspaceKind)}";
+            return $"{nodeName} - {GetSubspaceDisplayName(nodeData, subspaceKind)}";
         }
 
-        private static string GetSubspaceDisplayName(SubspaceKind subspaceKind)
+        private static string GetSubspaceDisplayName(NodeData nodeData, SubspaceKind subspaceKind)
         {
+            if (nodeData?.Type == NodeType.FlowFor && subspaceKind == SubspaceKind.Condition)
+                return "Граница";
+
             return subspaceKind switch
             {
                 SubspaceKind.Condition => "Условие",
@@ -195,17 +213,58 @@ namespace CustomVisualScripting.Editor.Windows
             };
         }
 
+        /// <summary>
+        /// Регистрирует рантайм вкладки подпространства; граф строится в <see cref="RebuildSubspaceRuntimeGraph"/> при активации вкладки.
+        /// </summary>
         private void CreateSubspaceRuntime(TabDescriptor tab)
         {
-            var nodeData = FindNodeData(tab.NodeId);
+            var nodeData = FindNodeDataOrSyncFromView(tab.NodeId);
             if (nodeData == null || !tab.SubspaceKind.HasValue) return;
             var subGraph = GetSubGraphRef(nodeData, tab.SubspaceKind.Value);
             if (subGraph == null) return;
-            var runtime = new SubspaceRuntime
+            _subspaceRuntimes[tab.Id] = new SubspaceRuntime
             {
-                SubGraph = subGraph,
-                InternalGraph = ScriptableObject.CreateInstance<BaseGraph>()
+                SubGraph = subGraph
             };
+        }
+
+        private static void TearDownSubspaceRuntimeGraph(SubspaceRuntime runtime)
+        {
+            if (runtime == null) return;
+            runtime.SyncTicker?.Pause();
+            runtime.SyncTicker = null;
+            if (runtime.GraphView != null)
+            {
+                runtime.GraphView.Dispose();
+                runtime.GraphView = null;
+            }
+
+            if (runtime.InternalGraph != null)
+            {
+                DestroyImmediate(runtime.InternalGraph);
+                runtime.InternalGraph = null;
+            }
+        }
+
+        /// <summary>
+        /// Пересобирает GraphView вкладки из актуального <see cref="GraphData"/> (в т.ч. после правок на основной вкладке).
+        /// Не вызывает <see cref="SyncSubspaceRuntime"/> перед очисткой — источник истины берём из модели, а не из устаревшего view.
+        /// </summary>
+        private void RebuildSubspaceRuntimeGraph(string tabId)
+        {
+            if (!_subspaceRuntimes.TryGetValue(tabId, out var runtime)) return;
+            var tab = _tabs.FirstOrDefault(t => string.Equals(t.Id, tabId, StringComparison.Ordinal));
+            if (tab == null || !tab.SubspaceKind.HasValue) return;
+
+            var nodeData = FindNodeDataOrSyncFromView(tab.NodeId);
+            if (nodeData == null) return;
+            var subGraph = GetSubGraphRef(nodeData, tab.SubspaceKind.Value);
+            if (subGraph == null) return;
+
+            runtime.SubGraph = subGraph;
+            TearDownSubspaceRuntimeGraph(runtime);
+
+            runtime.InternalGraph = ScriptableObject.CreateInstance<BaseGraph>();
             var nodeMap = new Dictionary<string, CustomBaseNode>();
             foreach (var sourceNode in subGraph.Nodes)
             {
@@ -219,6 +278,7 @@ namespace CustomVisualScripting.Editor.Windows
                 runtime.InternalGraph.AddNode(customNode);
                 nodeMap[sourceNode.Id] = customNode;
             }
+
             runtime.GraphView = new FilteredCreateMenuBaseGraphView(this);
             runtime.GraphView.Initialize(runtime.InternalGraph);
             runtime.GraphView.style.flexGrow = 1;
@@ -227,86 +287,22 @@ namespace CustomVisualScripting.Editor.Windows
                 SyncSubspaceRuntime(runtime);
                 return change;
             };
-            RestoreSubspaceEdges(runtime.GraphView, nodeMap, subGraph);
+            GraphViewEdgeRestore.RestoreEdges(runtime.GraphView, subGraph.Edges, nodeMap, validatePortDirections: false);
+            GraphDataViewSync.ApplySavedVisualLayout(subGraph, runtime.GraphView);
             ConfigureNodeViewSizing(runtime.GraphView.nodeViews);
+            GraphViewAutoLayout.ApplyIfNeededForNestedGraph(subGraph, runtime.GraphView.nodeViews,
+                SubGraphPanel.MeasureNestedGraphCell);
             runtime.GraphView.UpdateViewTransform(Vector3.zero, Vector3.one);
             runtime.GraphView.FrameAll();
             runtime.SyncTicker = runtime.GraphView.schedule.Execute(() => SyncSubspaceRuntime(runtime)).Every(300);
-            _subspaceRuntimes[tab.Id] = runtime;
-        }
-
-        private void RestoreSubspaceEdges(BaseGraphView graphView, Dictionary<string, CustomBaseNode> nodeMap, GraphData subGraph)
-        {
-            foreach (var edgeData in subGraph.Edges)
-            {
-                if (!nodeMap.TryGetValue(edgeData.FromNodeId, out var fromNode)) continue;
-                if (!nodeMap.TryGetValue(edgeData.ToNodeId, out var toNode)) continue;
-                if (!graphView.nodeViewsPerNode.TryGetValue(fromNode, out var fromNodeView)) continue;
-                if (!graphView.nodeViewsPerNode.TryGetValue(toNode, out var toNodeView)) continue;
-                var fromPort = fromNodeView.outputPortViews.FirstOrDefault(p => IsPortMatchForStorage(p, edgeData.FromPort));
-                var toPort = toNodeView.inputPortViews.FirstOrDefault(p => IsPortMatchForStorage(p, edgeData.ToPort));
-                if (fromPort == null || toPort == null) continue;
-                bool alreadyConnected = graphView.edgeViews.Any(e => e.output == fromPort && e.input == toPort);
-                if (!alreadyConnected)
-                    graphView.Connect(toPort, fromPort);
-            }
         }
 
         private void SyncSubspaceRuntime(SubspaceRuntime runtime)
         {
             if (runtime?.GraphView == null || runtime.InternalGraph == null || runtime.SubGraph == null) return;
-            runtime.SubGraph.Nodes.Clear();
-            runtime.SubGraph.Edges.Clear();
             var graphNodes = runtime.InternalGraph.nodes.OfType<CustomBaseNode>().ToList();
-            var validNodeIds = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var customNode in graphNodes)
-            {
-                var nodeData = customNode.ToNodeData();
-                nodeData.Id = customNode.NodeId;
-                nodeData.VariableName = customNode.variableName;
-                ApplyNodeDataLiteralValues(customNode, nodeData);
-                if (customNode is IfNode ifNode)
-                {
-                    nodeData.ConditionSubGraph = ifNode.conditionSubGraph;
-                    nodeData.BodySubGraph = ifNode.bodySubGraph;
-                }
-                else if (customNode is ElseNode elseNode)
-                {
-                    nodeData.BodySubGraph = elseNode.bodySubGraph;
-                }
-                else if (customNode is ForNode forNode)
-                {
-                    nodeData.InitSubGraph = forNode.initSubGraph;
-                    nodeData.ConditionSubGraph = forNode.conditionSubGraph;
-                    nodeData.IncrementSubGraph = forNode.incrementSubGraph;
-                    nodeData.BodySubGraph = forNode.bodySubGraph;
-                }
-                else if (customNode is WhileNode whileNode)
-                {
-                    nodeData.ConditionSubGraph = whileNode.conditionSubGraph;
-                    nodeData.BodySubGraph = whileNode.bodySubGraph;
-                }
-                runtime.SubGraph.Nodes.Add(nodeData);
-                validNodeIds.Add(customNode.NodeId);
-            }
-            foreach (var edgeView in runtime.GraphView.edgeViews)
-            {
-                var fromPort = edgeView.output as PortView;
-                var toPort = edgeView.input as PortView;
-                if (fromPort == null || toPort == null) continue;
-                if (fromPort.direction != Direction.Output || toPort.direction != Direction.Input) continue;
-                var fromNode = fromPort.owner.nodeTarget as CustomBaseNode;
-                var toNode = toPort.owner.nodeTarget as CustomBaseNode;
-                if (fromNode == null || toNode == null) continue;
-                if (!validNodeIds.Contains(fromNode.NodeId) || !validNodeIds.Contains(toNode.NodeId)) continue;
-                runtime.SubGraph.Edges.Add(new EdgeData
-                {
-                    FromNodeId = fromNode.NodeId,
-                    FromPort = CanonicalPortIdForStorage(fromPort),
-                    ToNodeId = toNode.NodeId,
-                    ToPort = CanonicalPortIdForStorage(toPort)
-                });
-            }
+            GraphDataViewSync.SyncGraphDataNodesAndEdgesFromView(runtime.SubGraph, graphNodes, runtime.GraphView);
+            GraphDataViewSync.SaveVisualLayoutToGraphData(runtime.SubGraph, runtime.InternalGraph, runtime.GraphView);
             _hasUnsavedChanges = true;
         }
 
@@ -323,44 +319,23 @@ namespace CustomVisualScripting.Editor.Windows
                 stringNode.stringValue = nodeData.Value;
         }
 
-        private static void ApplyNodeDataLiteralValues(CustomBaseNode customNode, NodeData nodeData)
-        {
-            if (customNode is IntNode intNode)
-            {
-                nodeData.Value = intNode.intValue.ToString();
-                nodeData.ExpressionOverride = intNode.expressionOverride;
-            }
-            else if (customNode is FloatNode floatNode)
-            {
-                nodeData.Value = floatNode.floatValue.ToString(CultureInfo.InvariantCulture);
-                nodeData.ExpressionOverride = floatNode.expressionOverride;
-            }
-            else if (customNode is BoolNode boolNode)
-            {
-                nodeData.Value = boolNode.boolValue.ToString();
-                nodeData.ExpressionOverride = boolNode.expressionOverride;
-            }
-            else if (customNode is StringNode stringNode)
-            {
-                nodeData.Value = stringNode.stringValue;
-                nodeData.ExpressionOverride = stringNode.expressionOverride;
-            }
-            else if (customNode is ConsoleWriteLineNode cwlNode)
-            {
-                nodeData.Value = cwlNode.messageText;
-                nodeData.ValueType = cwlNode.messageValueType;
-            }
-        }
-
         private NodeData FindNodeData(string nodeId)
         {
             return _currentGraph?.LogicGraph?.Nodes?.FirstOrDefault(n => string.Equals(n.Id, nodeId, StringComparison.Ordinal));
         }
 
-        internal bool TryGetNodeDataById(string nodeId, out NodeData nodeData)
+        private NodeData FindNodeDataOrSyncFromView(string nodeId)
         {
-            nodeData = FindNodeData(nodeId);
-            return nodeData != null;
+            var nodeData = FindNodeData(nodeId);
+            if (nodeData != null) return nodeData;
+
+            if (_graphView != null && _internalGraph != null)
+            {
+                SyncFullGraphFromView();
+                return FindNodeData(nodeId);
+            }
+
+            return null;
         }
 
         private static GraphData GetSubGraphRef(NodeData nodeData, SubspaceKind subspaceKind)
@@ -409,18 +384,8 @@ namespace CustomVisualScripting.Editor.Windows
         private void DisposeSubspaceRuntime(string tabId)
         {
             if (!_subspaceRuntimes.TryGetValue(tabId, out var runtime)) return;
-            runtime.SyncTicker?.Pause();
-            runtime.SyncTicker = null;
-            if (runtime.GraphView != null)
-            {
-                runtime.GraphView.Dispose();
-                runtime.GraphView = null;
-            }
-            if (runtime.InternalGraph != null)
-            {
-                DestroyImmediate(runtime.InternalGraph);
-                runtime.InternalGraph = null;
-            }
+            SyncSubspaceRuntime(runtime);
+            TearDownSubspaceRuntimeGraph(runtime);
             _subspaceRuntimes.Remove(tabId);
         }
     }

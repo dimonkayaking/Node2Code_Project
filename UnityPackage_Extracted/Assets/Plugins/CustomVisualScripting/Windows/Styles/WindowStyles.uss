@@ -123,6 +123,14 @@
     margin-right: 2px;
 }
 
+.node-subspace-links-row {
+    flex-shrink: 0;
+}
+
+.node-subspace-links-row .node-subspace-link {
+    flex-shrink: 0;
+}
+
 .node-subspace-link {
     border-width: 0;
     background-color: rgba(0, 0, 0, 0);

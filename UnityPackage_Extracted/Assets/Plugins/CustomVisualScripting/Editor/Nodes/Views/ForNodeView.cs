@@ -3,7 +3,6 @@ using UnityEngine.UIElements;
 using GraphProcessor;
 using CustomVisualScripting.Editor.Nodes.Flow;
 using CustomVisualScripting.Editor.Windows;
-using UnityEditor;
 
 namespace CustomVisualScripting.Editor.Nodes.Views
 {
@@ -22,7 +21,7 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         private VisualElement _conditionsRow;
         private Label _conditionsCollapseToggle;
         private Label _collapseToggle;
-        private Button _openSubspaceButton;
+        private VisualElement _subspaceLinksRow;
         private bool _panelsExpanded = true;
         private bool _conditionsExpanded = true;
         private IVisualElementScheduledItem _syncBoundsTask;
@@ -59,12 +58,14 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             });
             titleContainer.Add(_collapseToggle);
 
-            _openSubspaceButton = new Button(ShowOpenSubspaceMenu) { text = "↗" };
-            _openSubspaceButton.AddToClassList("node-subspace-link");
-            _openSubspaceButton.style.position = Position.Absolute;
-            _openSubspaceButton.style.right = 30;
-            _openSubspaceButton.style.top = 3;
-            titleContainer.Add(_openSubspaceButton);
+            _subspaceLinksRow = SubspaceHeaderLinkRow.Create(
+                titleContainer,
+                _node.NodeId,
+                ("\u041E\u0431\u044A\u044F\u0432\u043B\u0435\u043D\u0438\u0435", SubspaceKind.Init),
+                ("\u0413\u0440\u0430\u043D\u0438\u0446\u0430", SubspaceKind.Condition),
+                ("\u0428\u0430\u0433", SubspaceKind.Increment),
+                ("\u0422\u0435\u043B\u043E", SubspaceKind.Body));
+            titleContainer.Add(_subspaceLinksRow);
 
             _panelsContainer = new VisualElement();
             _panelsContainer.style.flexDirection = FlexDirection.Column;
@@ -210,6 +211,23 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             _panelsContainer.style.display = _panelsExpanded ? DisplayStyle.Flex : DisplayStyle.None;
             _collapseToggle.text = _panelsExpanded ? "\u25BC" : "\u25B6";
             NodeViewBoundsUtils.SetFlowControlsMinHeightForCollapse(controlsContainer, _panelsExpanded);
+            if (_panelsExpanded)
+            {
+                _initPanel?.RefreshGraphViewport();
+                _conditionPanel?.RefreshGraphViewport();
+                _incrementPanel?.RefreshGraphViewport();
+                _bodyPanel?.RefreshGraphViewport();
+                schedule.Execute(() =>
+                {
+                    if (!_panelsExpanded)
+                        return;
+                    _initPanel?.RefreshGraphViewport();
+                    _conditionPanel?.RefreshGraphViewport();
+                    _incrementPanel?.RefreshGraphViewport();
+                    _bodyPanel?.RefreshGraphViewport();
+                }).ExecuteLater(120);
+            }
+
             RequestBoundsSync();
         }
 
@@ -245,23 +263,6 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         private void OnBodyPanelResized(SubGraphPanel _, Vector2 __)
         {
             RequestBoundsSync();
-        }
-
-        private void ShowOpenSubspaceMenu()
-        {
-            if (_node == null)
-                return;
-
-            var menu = new GenericMenu();
-            menu.AddItem(new GUIContent("Объявление"), false,
-                () => VisualScriptingWindow.ActiveWindow?.OpenSubspaceFromNode(_node.NodeId, SubspaceKind.Init));
-            menu.AddItem(new GUIContent("Граница"), false,
-                () => VisualScriptingWindow.ActiveWindow?.OpenSubspaceFromNode(_node.NodeId, SubspaceKind.Condition));
-            menu.AddItem(new GUIContent("Шаг"), false,
-                () => VisualScriptingWindow.ActiveWindow?.OpenSubspaceFromNode(_node.NodeId, SubspaceKind.Increment));
-            menu.AddItem(new GUIContent("Тело"), false,
-                () => VisualScriptingWindow.ActiveWindow?.OpenSubspaceFromNode(_node.NodeId, SubspaceKind.Body));
-            menu.ShowAsContext();
         }
 
         public (float minW, float minH) GetResolvedMinBounds()
@@ -317,8 +318,8 @@ namespace CustomVisualScripting.Editor.Nodes.Views
 
             if (_collapseToggle != null && _collapseToggle.parent == titleContainer)
                 titleContainer.Remove(_collapseToggle);
-            if (_openSubspaceButton != null && _openSubspaceButton.parent == titleContainer)
-                titleContainer.Remove(_openSubspaceButton);
+            if (_subspaceLinksRow != null && _subspaceLinksRow.parent == titleContainer)
+                titleContainer.Remove(_subspaceLinksRow);
 
             _panelsContainer?.RemoveFromHierarchy();
 
@@ -332,7 +333,7 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             _conditionsCollapseToggle = null;
             _panelsContainer = null;
             _collapseToggle = null;
-            _openSubspaceButton = null;
+            _subspaceLinksRow = null;
         }
     }
 }

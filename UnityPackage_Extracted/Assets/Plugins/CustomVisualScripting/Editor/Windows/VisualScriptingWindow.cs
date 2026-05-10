@@ -4,7 +4,6 @@ using System.Linq;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using UnityEditor;
-using UnityEditor.Experimental.GraphView;
 using UnityEngine;
 using UnityEngine.UIElements;
 using GraphProcessor;
@@ -12,18 +11,11 @@ using CustomVisualScripting.Integration;
 using CustomVisualScripting.Integration.Models;
 using CustomVisualScripting.Windows.Views;
 using CustomVisualScripting.Editor.Nodes.Base;
-using CustomVisualScripting.Editor.Nodes.Literals;
-using CustomVisualScripting.Editor.Nodes.Math;
-using CustomVisualScripting.Editor.Nodes.Comparison;
-using CustomVisualScripting.Editor.Nodes.Flow;
-using CustomVisualScripting.Editor.Nodes.Debug;
-using CustomVisualScripting.Editor.Nodes.Logic;
-using CustomVisualScripting.Editor.Nodes.Conversion;
-using CustomVisualScripting.Editor.Nodes.Unity;
 using CustomVisualScripting.Editor.Nodes.Views;
 using CustomVisualScripting.Runtime.Execution;
 using VisualScripting.Core.Models;
 using CustomToolbar = CustomVisualScripting.Windows.Views.ToolbarView;
+using CustomVisualScripting.Editor;
 
 namespace CustomVisualScripting.Editor.Windows
 {
@@ -351,101 +343,8 @@ namespace CustomVisualScripting.Editor.Windows
         {
             if (_graphView == null || _internalGraph == null) return;
 
-            _currentGraph.LogicGraph.Nodes.Clear();
-            _currentGraph.LogicGraph.Edges.Clear();
-
             var graphNodes = _internalGraph.nodes.OfType<CustomBaseNode>().ToList();
-            var validNodeIds = new HashSet<string>();
-
-            foreach (var customNode in graphNodes)
-            {
-                var nodeData = customNode.ToNodeData();
-                nodeData.Id = customNode.NodeId;
-                nodeData.VariableName = customNode.variableName;
-
-                if (customNode is IntNode intNode)
-                {
-                    nodeData.Value = intNode.intValue.ToString();
-                    nodeData.ExpressionOverride = intNode.expressionOverride;
-                }
-                else if (customNode is FloatNode floatNode)
-                {
-                    nodeData.Value = floatNode.floatValue.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                    nodeData.ExpressionOverride = floatNode.expressionOverride;
-                }
-                else if (customNode is BoolNode boolNode)
-                {
-                    nodeData.Value = boolNode.boolValue.ToString();
-                    nodeData.ExpressionOverride = boolNode.expressionOverride;
-                }
-                else if (customNode is StringNode stringNode)
-                {
-                    nodeData.Value = stringNode.stringValue;
-                    nodeData.ExpressionOverride = stringNode.expressionOverride;
-                }
-                else if (customNode is ConsoleWriteLineNode cwlNode)
-                {
-                    nodeData.Value = cwlNode.messageText;
-                    nodeData.ValueType = cwlNode.messageValueType;
-                }
-
-                if (customNode is IfNode ifNode)
-                {
-                    nodeData.ConditionSubGraph = ifNode.conditionSubGraph;
-                    nodeData.BodySubGraph = ifNode.bodySubGraph;
-                }
-                else if (customNode is ElseNode elseNode)
-                {
-                    nodeData.BodySubGraph = elseNode.bodySubGraph;
-                }
-        else if (customNode is ForNode forNode)
-        {
-            nodeData.InitSubGraph = forNode.initSubGraph;
-            nodeData.ConditionSubGraph = forNode.conditionSubGraph;
-            nodeData.IncrementSubGraph = forNode.incrementSubGraph;
-            nodeData.BodySubGraph = forNode.bodySubGraph;
-        }
-                else if (customNode is WhileNode whileNode)
-                {
-                    nodeData.ConditionSubGraph = whileNode.conditionSubGraph;
-                    nodeData.BodySubGraph = whileNode.bodySubGraph;
-                }
-
-                _currentGraph.LogicGraph.Nodes.Add(nodeData);
-                validNodeIds.Add(customNode.NodeId);
-            }
-
-            foreach (var edgeView in _graphView.edgeViews)
-            {
-                if (edgeView == null) continue;
-
-                var fromPort = edgeView.output as PortView;
-                var toPort = edgeView.input as PortView;
-
-                if (fromPort == null || toPort == null) continue;
-                if (fromPort.direction != Direction.Output || toPort.direction != Direction.Input) continue;
-
-                var fromNode = fromPort.owner.nodeTarget as CustomBaseNode;
-                var toNode = toPort.owner.nodeTarget as CustomBaseNode;
-
-                if (fromNode == null || toNode == null) continue;
-                if (!validNodeIds.Contains(fromNode.NodeId) || !validNodeIds.Contains(toNode.NodeId)) continue;
-
-                Debug.Log($"[VS] Сохраняем связь: {fromNode.NodeId}.{fromPort.fieldName} → {toNode.NodeId}.{toPort.fieldName}");
-
-                var canonicalFrom = CanonicalFromPortIdForStorage(fromPort, fromNode, toNode, CanonicalPortIdForStorage(toPort));
-                var canonicalTo = CanonicalPortIdForStorage(toPort);
-                if (string.IsNullOrEmpty(canonicalFrom) || string.IsNullOrEmpty(canonicalTo))
-                    continue;
-
-                _currentGraph.LogicGraph.Edges.Add(new EdgeData
-                {
-                    FromNodeId = fromNode.NodeId,
-                    FromPort = canonicalFrom,
-                    ToNodeId = toNode.NodeId,
-                    ToPort = canonicalTo
-                });
-            }
+            GraphDataViewSync.SyncGraphDataNodesAndEdgesFromView(_currentGraph.LogicGraph, graphNodes, _graphView);
 
             SaveVisualNodePositions();
             _hasUnsavedChanges = true;
@@ -472,102 +371,8 @@ namespace CustomVisualScripting.Editor.Windows
             }
         }
         
-        private CustomBaseNode CreateNodeFromData(NodeData data)
-        {
-            if (data == null) return null;
-            
-            switch (data.Type)
-            {
-                case NodeType.LiteralInt: return new IntNode();
-                case NodeType.LiteralFloat: return new FloatNode();
-                case NodeType.LiteralBool: return new BoolNode();
-                case NodeType.LiteralString: return new StringNode();
-                case NodeType.MathAdd: return new AddNode();
-                case NodeType.MathSubtract: return new SubtractNode();
-                case NodeType.MathMultiply: return new MultiplyNode();
-                case NodeType.MathDivide: return new DivideNode();
-                case NodeType.MathModulo: return new ModuloNode();
-                case NodeType.CompareEqual: return new EqualNode();
-                case NodeType.CompareNotEqual: return new NotEqualNode();
-                case NodeType.CompareGreater: return new GreaterNode();
-                case NodeType.CompareGreaterOrEqual: return new GreaterOrEqualNode();
-                case NodeType.CompareLess: return new LessNode();
-                case NodeType.CompareLessOrEqual: return new LessOrEqualNode();
-                case NodeType.LogicalAnd: return new AndNode();
-                case NodeType.LogicalOr: return new OrNode();
-                case NodeType.LogicalNot: return new NotNode();
-                case NodeType.FlowIf: return new IfNode();
-                case NodeType.FlowElse: return new ElseNode();
-                case NodeType.FlowFor: return new ForNode();
-                case NodeType.FlowWhile: return new WhileNode();
-                case NodeType.ConsoleWriteLine: return new ConsoleWriteLineNode();
-                case NodeType.DebugLog: return new DebugLogNode();
-                case NodeType.IntParse: return new IntParseNode();
-                case NodeType.FloatParse: return new FloatParseNode();
-                case NodeType.ToStringConvert: return new ToStringNode();
-                case NodeType.MathfAbs: return new MathfAbsNode();
-                case NodeType.MathfMax: return new MathfMaxNode();
-                case NodeType.MathfMin: return new MathfMinNode();
-                case NodeType.UnityVector3: return new Vector3CreateNode();
-                case NodeType.UnityGetPosition: return new GetPositionNode();
-                case NodeType.UnitySetPosition: return new SetPositionNode();
-                default: return null;
-            }
-        }
+        private CustomBaseNode CreateNodeFromData(NodeData data) =>
+            EditorNodeFactory.Create(data);
 
-        /// <summary>
-        /// Единые имена портов в LogicGraph (GraphProcessor может отличаться регистром fieldName / portName).
-        /// </summary>
-        private static string CanonicalFromPortIdForStorage(PortView port, CustomBaseNode fromNode, CustomBaseNode toNode, string canonicalToPort)
-        {
-            return CanonicalPortIdForStorage(port);
-        }
-
-        private static bool IsPortMatchForStorage(PortView port, string savedPortId)
-        {
-            if (port == null || string.IsNullOrWhiteSpace(savedPortId))
-                return false;
-
-            var expected = NormalizePortId(savedPortId);
-            if (string.IsNullOrEmpty(expected))
-                return false;
-
-            var field = NormalizePortId(port.fieldName);
-            if (!string.IsNullOrEmpty(field) &&
-                string.Equals(field, expected, StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            var name = NormalizePortId(port.portName);
-            return !string.IsNullOrEmpty(name) &&
-                   string.Equals(name, expected, StringComparison.OrdinalIgnoreCase);
-        }
-
-        /// <summary>
-        /// Единые имена портов в LogicGraph (GraphProcessor может отличаться регистром fieldName / portName).
-        /// </summary>
-        private static string CanonicalPortIdForStorage(PortView port)
-        {
-            var fn = NormalizePortId(port.fieldName);
-            if (!string.IsNullOrEmpty(fn))
-                return fn;
-
-            var pn = NormalizePortId(port.portName);
-            if (!string.IsNullOrEmpty(pn))
-                return pn;
-
-            // Fallback for legacy/unnamed execution ports.
-            if (port.direction == Direction.Input)
-                return PortIds.ExecIn;
-            if (port.direction == Direction.Output)
-                return PortIds.ExecOut;
-
-            return "";
-        }
-
-        private static string NormalizePortId(string rawPortId)
-        {
-            return PortIds.Normalize(rawPortId);
-        }
-        
     }
 }

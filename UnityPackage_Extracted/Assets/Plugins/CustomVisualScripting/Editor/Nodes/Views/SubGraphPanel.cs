@@ -17,6 +17,7 @@ using CustomVisualScripting.Editor.Nodes.Math;
 using CustomVisualScripting.Editor.Nodes.Unity;
 using CustomVisualScripting.Editor.Windows;
 using VisualScripting.Core.Models;
+using CustomVisualScripting.Editor;
 
 namespace CustomVisualScripting.Editor.Nodes.Views
 {
@@ -46,10 +47,14 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         private Label _toggleLabel;
         private VisualElement _content;
         private BaseGraph _internalGraph;
-        private BaseGraphView _graphView;
+        private FilteredCreateMenuBaseGraphView _graphView;
         private IVisualElementScheduledItem _syncTicker;
+        private EventCallback<GeometryChangedEvent> _contentViewportGeometryCb;
         private bool _isExpanded = true;
         private bool _isSyncing;
+        private bool _didFirstGeometryRebuild;
+
+        private const float ContentViewportMinLayoutPx = 80f;
 
         /// <summary>Совпадает с вычитанием «шапки» в MakePanelResizable: контент = высота панели − это значение.</summary>
         private const float HeaderChromePixels = 28f;
@@ -69,14 +74,20 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             _showHeaderCollapseToggle = showHeaderCollapseToggle;
 
             BuildUI();
-            RegisterCallback<DetachFromPanelEvent>(_ => DisposeGraph());
-            RegisterCallback<AttachToPanelEvent>(OnFirstAttach);
-        }
-
-        private void OnFirstAttach(AttachToPanelEvent evt)
-        {
-            UnregisterCallback<AttachToPanelEvent>(OnFirstAttach);
-            schedule.Execute(Rebuild).ExecuteLater(1);
+            Rebuild();
+            RegisterCallback<DetachFromPanelEvent>(_ =>
+            {
+                SyncBackFromGraphView();
+                DisposeGraph();
+            });
+            RegisterCallback<AttachToPanelEvent>(_ =>
+            {
+                if (_graphView == null)
+                {
+                    _didFirstGeometryRebuild = false;
+                    Rebuild();
+                }
+            });
         }
 
         public GraphData SubGraph => _subGraph;
@@ -84,9 +95,39 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         /// <summary>True, если область графа развёрнута (не только строка заголовка).</summary>
         public bool IsGraphExpanded => _isExpanded;
 
+        /// <summary>
+        /// Вызывать, когда вложенная панель снова получила ненулевую область (например разворот тела flow-ноды):
+        /// пересчитывает камеру GraphView так же, как после открытия вкладки подпространства.
+        /// </summary>
+        public void RefreshGraphViewport()
+        {
+            if (_graphView == null || !_isExpanded)
+                return;
+
+            void ResetViewportTransform()
+            {
+                if (_graphView == null)
+                    return;
+
+                var r = _graphView.layout;
+                if (float.IsNaN(r.width) || float.IsNaN(r.height) || r.width < 10f || r.height < 10f)
+                {
+                    _graphView.schedule.Execute(ResetViewportTransform).ExecuteLater(50);
+                    return;
+                }
+
+                _graphView.UpdateViewTransform(Vector3.zero, Vector3.one);
+            }
+
+            _graphView.schedule.Execute(ResetViewportTransform).ExecuteLater(0);
+            _graphView.schedule.Execute(ResetViewportTransform).ExecuteLater(50);
+            _graphView.schedule.Execute(ResetViewportTransform).ExecuteLater(150);
+        }
+
         public void SetSubGraph(GraphData subGraph)
         {
             _subGraph = subGraph ?? new GraphData();
+            _didFirstGeometryRebuild = false;
             Rebuild();
         }
 
@@ -94,6 +135,15 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         {
             DisposeGraph();
             CreateGraphViewFromSubGraph();
+            
+            if (_isExpanded && _graphView != null)
+            {
+                _graphView.schedule.Execute(() =>
+                {
+                    if (_graphView != null)
+                        _graphView.UpdateViewTransform(Vector3.zero, Vector3.one);
+                }).ExecuteLater(10);
+            }
         }
 
         private void BuildUI()
@@ -168,9 +218,21 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             _isExpanded = !_isExpanded;
 
             if (_isExpanded)
+            {
                 ApplyExpandedPanelLayout();
+                if (_graphView != null)
+                {
+                    _graphView.schedule.Execute(() =>
+                    {
+                        if (_graphView != null)
+                            _graphView.UpdateViewTransform(Vector3.zero, Vector3.one);
+                    }).ExecuteLater(10);
+                }
+            }
             else
+            {
                 ApplyCollapsedPanelLayout();
+            }
 
             if (_toggleLabel != null)
                 _toggleLabel.text = _isExpanded ? "\u25BC" : "\u25B6";
@@ -218,8 +280,12 @@ namespace CustomVisualScripting.Editor.Nodes.Views
 
         private void CreateGraphViewFromSubGraph()
         {
+            UnregisterContentViewportGeometryHook();
             _content.Clear();
             _internalGraph = ScriptableObject.CreateInstance<BaseGraph>();
+            _internalGraph.hideFlags = HideFlags.HideAndDontSave;
+            Undo.ClearUndo(_internalGraph);
+
             var nodeMap = new Dictionary<string, CustomBaseNode>();
 
             foreach (var nodeData in _subGraph.Nodes)
@@ -250,26 +316,66 @@ namespace CustomVisualScripting.Editor.Nodes.Views
 
             RestoreEdges(nodeMap);
             _content.Add(_graphView);
+            GraphDataViewSync.ApplySavedVisualLayout(_subGraph, _graphView);
             ConfigureNodeViewSizing(_graphView.nodeViews);
             RefreshNodeViewsLayout(_graphView.nodeViews);
-            AutoLayoutIfNeeded(_graphView.nodeViews);
+            GraphViewAutoLayout.ApplyIfNeededForNestedGraph(_subGraph, _graphView.nodeViews, MeasureNestedGraphCell);
             RefreshNodeViewsLayout(_graphView.nodeViews);
             _graphView.UpdateViewTransform(Vector3.zero, Vector3.one);
-            _graphView.FrameAll();
 
             // One extra deferred pass after mount: GraphView/Ports geometry settles asynchronously.
-            _graphView.schedule.Execute(() =>
+            void DeferredLayoutPass()
             {
                 if (_graphView == null)
                     return;
                 ConfigureNodeViewSizing(_graphView.nodeViews);
-                AutoLayoutIfNeeded(_graphView.nodeViews);
+                GraphViewAutoLayout.ApplyIfNeededForNestedGraph(_subGraph, _graphView.nodeViews, MeasureNestedGraphCell);
                 RefreshNodeViewsLayout(_graphView.nodeViews);
                 _graphView.UpdateViewTransform(Vector3.zero, Vector3.one);
-                _graphView.FrameAll();
-            }).ExecuteLater(50);
+            }
+
+            _graphView.schedule.Execute(DeferredLayoutPass).ExecuteLater(50);
+            _graphView.schedule.Execute(DeferredLayoutPass).ExecuteLater(200);
+
+            if (!_didFirstGeometryRebuild)
+                RegisterContentViewportGeometryHook();
 
             ApplyCollapsedVisualStateIfNeeded();
+        }
+
+        private void RegisterContentViewportGeometryHook()
+        {
+            if (_content == null)
+                return;
+            UnregisterContentViewportGeometryHook();
+            _contentViewportGeometryCb = OnContentFirstSizedForViewport;
+            _content.RegisterCallback(_contentViewportGeometryCb);
+        }
+
+        private void UnregisterContentViewportGeometryHook()
+        {
+            if (_contentViewportGeometryCb == null || _content == null)
+                return;
+            _content.UnregisterCallback(_contentViewportGeometryCb);
+            _contentViewportGeometryCb = null;
+        }
+
+        private void OnContentFirstSizedForViewport(GeometryChangedEvent evt)
+        {
+            if (_graphView == null || !_isExpanded || _didFirstGeometryRebuild)
+                return;
+            var r = evt.newRect;
+            if (r.width < ContentViewportMinLayoutPx || r.height < ContentViewportMinLayoutPx)
+                return;
+
+            _didFirstGeometryRebuild = true;
+            UnregisterContentViewportGeometryHook();
+
+            // Сохраняем текущие позиции (включая только что посчитанные AutoLayout) в _subGraph,
+            // чтобы Rebuild через ApplySavedVisualLayout их восстановил.
+            SyncBackFromGraphView();
+
+            Rebuild();
         }
 
         private GraphViewChange OnGraphViewChanged(GraphViewChange change)
@@ -285,101 +391,17 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         {
             if (_graphView == null || _internalGraph == null)
                 return;
+                
+            var r = _graphView.layout;
+            if (!_isExpanded || float.IsNaN(r.width) || float.IsNaN(r.height) || r.width < 10f || r.height < 10f)
+                return;
 
             _isSyncing = true;
             try
             {
-                _subGraph.Nodes.Clear();
-                _subGraph.Edges.Clear();
-
                 var graphNodes = _internalGraph.nodes.OfType<CustomBaseNode>().ToList();
-                var validNodeIds = new HashSet<string>();
-
-                foreach (var customNode in graphNodes)
-                {
-                    var nodeData = customNode.ToNodeData();
-                    nodeData.Id = customNode.NodeId;
-                    nodeData.VariableName = customNode.variableName;
-
-                    if (customNode is IntNode intNode)
-                    {
-                        nodeData.Value = intNode.intValue.ToString();
-                        nodeData.ExpressionOverride = intNode.expressionOverride;
-                    }
-                    else if (customNode is FloatNode floatNode)
-                    {
-                        nodeData.Value = floatNode.floatValue.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                        nodeData.ExpressionOverride = floatNode.expressionOverride;
-                    }
-                    else if (customNode is BoolNode boolNode)
-                    {
-                        nodeData.Value = boolNode.boolValue.ToString();
-                        nodeData.ExpressionOverride = boolNode.expressionOverride;
-                    }
-                    else if (customNode is StringNode stringNode)
-                    {
-                        nodeData.Value = stringNode.stringValue;
-                        nodeData.ExpressionOverride = stringNode.expressionOverride;
-                    }
-                    else if (customNode is ConsoleWriteLineNode cwlNode)
-                    {
-                        nodeData.Value = cwlNode.messageText;
-                        nodeData.ValueType = cwlNode.messageValueType;
-                    }
-
-                    if (customNode is IfNode ifNode)
-                    {
-                        nodeData.ConditionSubGraph = ifNode.conditionSubGraph;
-                        nodeData.BodySubGraph = ifNode.bodySubGraph;
-                    }
-                    else if (customNode is ElseNode elseNode)
-                    {
-                        nodeData.BodySubGraph = elseNode.bodySubGraph;
-                    }
-                    else if (customNode is ForNode forNode)
-                    {
-                        nodeData.InitSubGraph = forNode.initSubGraph;
-                        nodeData.ConditionSubGraph = forNode.conditionSubGraph;
-                        nodeData.IncrementSubGraph = forNode.incrementSubGraph;
-                        nodeData.BodySubGraph = forNode.bodySubGraph;
-                    }
-                    else if (customNode is WhileNode whileNode)
-                    {
-                        nodeData.ConditionSubGraph = whileNode.conditionSubGraph;
-                        nodeData.BodySubGraph = whileNode.bodySubGraph;
-                    }
-
-                    _subGraph.Nodes.Add(nodeData);
-                    validNodeIds.Add(customNode.NodeId);
-                }
-
-                foreach (var edgeView in _graphView.edgeViews)
-                {
-                    if (edgeView == null)
-                        continue;
-
-                    var fromPort = edgeView.output as PortView;
-                    var toPort = edgeView.input as PortView;
-                    if (fromPort == null || toPort == null)
-                        continue;
-                    if (fromPort.direction != Direction.Output || toPort.direction != Direction.Input)
-                        continue;
-
-                    var fromNode = fromPort.owner.nodeTarget as CustomBaseNode;
-                    var toNode = toPort.owner.nodeTarget as CustomBaseNode;
-                    if (fromNode == null || toNode == null)
-                        continue;
-                    if (!validNodeIds.Contains(fromNode.NodeId) || !validNodeIds.Contains(toNode.NodeId))
-                        continue;
-
-                    _subGraph.Edges.Add(new EdgeData
-                    {
-                        FromNodeId = fromNode.NodeId,
-                        FromPort = CanonicalPortIdForStorage(fromPort),
-                        ToNodeId = toNode.NodeId,
-                        ToPort = CanonicalPortIdForStorage(toPort)
-                    });
-                }
+                GraphDataViewSync.SyncGraphDataNodesAndEdgesFromView(_subGraph, graphNodes, _graphView);
+                GraphDataViewSync.SaveVisualLayoutToGraphData(_subGraph, _internalGraph, _graphView);
             }
             finally
             {
@@ -391,74 +413,7 @@ namespace CustomVisualScripting.Editor.Nodes.Views
 
         private void RestoreEdges(Dictionary<string, CustomBaseNode> nodeMap)
         {
-            if (_subGraph.Edges == null || _subGraph.Edges.Count == 0)
-                return;
-
-            foreach (var edgeData in _subGraph.Edges)
-            {
-                if (!nodeMap.TryGetValue(edgeData.FromNodeId, out var fromNode))
-                    continue;
-                if (!nodeMap.TryGetValue(edgeData.ToNodeId, out var toNode))
-                    continue;
-                if (!_graphView.nodeViewsPerNode.TryGetValue(fromNode, out var fromNodeView))
-                    continue;
-                if (!_graphView.nodeViewsPerNode.TryGetValue(toNode, out var toNodeView))
-                    continue;
-
-                var fromPort = fromNodeView.outputPortViews.FirstOrDefault(p => IsPortMatchForStorage(p, edgeData.FromPort));
-                var toPort = toNodeView.inputPortViews.FirstOrDefault(p => IsPortMatchForStorage(p, edgeData.ToPort));
-                if (fromPort == null || toPort == null)
-                    continue;
-
-                bool alreadyConnected = false;
-                foreach (var existingEdge in _graphView.edgeViews)
-                {
-                    if (existingEdge.output == fromPort && existingEdge.input == toPort)
-                    {
-                        alreadyConnected = true;
-                        break;
-                    }
-                }
-
-                if (!alreadyConnected)
-                    _graphView.Connect(toPort, fromPort);
-            }
-        }
-
-        private static string CanonicalPortIdForStorage(PortView port)
-        {
-            var fn = PortIds.Normalize(port.fieldName);
-            if (!string.IsNullOrEmpty(fn))
-                return fn;
-
-            var pn = PortIds.Normalize(port.portName);
-            if (!string.IsNullOrEmpty(pn))
-                return pn;
-
-            if (port.direction == Direction.Input)
-                return PortIds.ExecIn;
-            if (port.direction == Direction.Output)
-                return PortIds.ExecOut;
-            return "";
-        }
-
-        private static bool IsPortMatchForStorage(PortView port, string savedPortId)
-        {
-            if (port == null || string.IsNullOrWhiteSpace(savedPortId))
-                return false;
-
-            var expected = PortIds.Normalize(savedPortId);
-            if (string.IsNullOrEmpty(expected))
-                return false;
-
-            var field = PortIds.Normalize(port.fieldName);
-            if (!string.IsNullOrEmpty(field) &&
-                string.Equals(field, expected, StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            var name = PortIds.Normalize(port.portName);
-            return !string.IsNullOrEmpty(name) &&
-                   string.Equals(name, expected, StringComparison.OrdinalIgnoreCase);
+            GraphViewEdgeRestore.RestoreEdges(_graphView, _subGraph.Edges, nodeMap, validatePortDirections: false);
         }
 
         private static void ApplyNodeLiteralValues(CustomBaseNode node, NodeData nodeData)
@@ -475,55 +430,15 @@ namespace CustomVisualScripting.Editor.Nodes.Views
                 stringNode.stringValue = nodeData.Value;
         }
 
-        private CustomBaseNode CreateNodeFromData(NodeData data)
-        {
-            if (data == null)
-                return null;
-
-            if (_isConditionPanel && data.Type is NodeType.FlowIf or NodeType.FlowElse or NodeType.FlowFor or NodeType.FlowWhile)
-                return null;
-
-            return data.Type switch
-            {
-                NodeType.LiteralInt => new IntNode(),
-                NodeType.LiteralFloat => new FloatNode(),
-                NodeType.LiteralBool => new BoolNode(),
-                NodeType.LiteralString => new StringNode(),
-                NodeType.MathAdd => new AddNode(),
-                NodeType.MathSubtract => new SubtractNode(),
-                NodeType.MathMultiply => new MultiplyNode(),
-                NodeType.MathDivide => new DivideNode(),
-                NodeType.MathModulo => new ModuloNode(),
-                NodeType.CompareEqual => new EqualNode(),
-                NodeType.CompareNotEqual => new NotEqualNode(),
-                NodeType.CompareGreater => new GreaterNode(),
-                NodeType.CompareGreaterOrEqual => new GreaterOrEqualNode(),
-                NodeType.CompareLess => new LessNode(),
-                NodeType.CompareLessOrEqual => new LessOrEqualNode(),
-                NodeType.LogicalAnd => new AndNode(),
-                NodeType.LogicalOr => new OrNode(),
-                NodeType.LogicalNot => new NotNode(),
-                NodeType.FlowIf => new IfNode(),
-                NodeType.FlowElse => new ElseNode(),
-                NodeType.FlowFor => new ForNode(),
-                NodeType.FlowWhile => new WhileNode(),
-                NodeType.ConsoleWriteLine => new ConsoleWriteLineNode(),
-                NodeType.DebugLog => new DebugLogNode(),
-                NodeType.IntParse => new IntParseNode(),
-                NodeType.FloatParse => new FloatParseNode(),
-                NodeType.ToStringConvert => new ToStringNode(),
-                NodeType.MathfAbs => new MathfAbsNode(),
-                NodeType.MathfMax => new MathfMaxNode(),
-                NodeType.MathfMin => new MathfMinNode(),
-                NodeType.UnityVector3 => new Vector3CreateNode(),
-                NodeType.UnityGetPosition => new GetPositionNode(),
-                NodeType.UnitySetPosition => new SetPositionNode(),
-                _ => null
-            };
-        }
+        private CustomBaseNode CreateNodeFromData(NodeData data) =>
+            EditorNodeFactory.Create(data,
+                _isConditionPanel
+                    ? EditorNodeFactoryContext.SubGraphConditionPanel
+                    : EditorNodeFactoryContext.Default);
 
         private void DisposeGraph()
         {
+            UnregisterContentViewportGeometryHook();
             if (_graphView != null)
             {
                 _syncTicker?.Pause();
@@ -535,6 +450,7 @@ namespace CustomVisualScripting.Editor.Nodes.Views
 
             if (_internalGraph != null)
             {
+                Undo.ClearUndo(_internalGraph);
                 ScriptableObject.DestroyImmediate(_internalGraph);
                 _internalGraph = null;
             }
@@ -552,6 +468,14 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             }
         }
 
+        /// <summary>Размер ячейки для DAG-раскладки в подпространстве (вкладка и вложенная панель).</summary>
+        public static (float Width, float Height) MeasureNestedGraphCell(BaseNodeView view)
+        {
+            ResolveSubGraphNodeMinSizes(view, out var mw, out var mh);
+            var rect = view.GetPosition();
+            return (Mathf.Max(rect.width, mw), Mathf.Max(rect.height, mh));
+        }
+
         private static void ConfigureNodeViewSizing(IEnumerable<BaseNodeView> nodeViews)
         {
             foreach (var nodeView in nodeViews)
@@ -567,8 +491,8 @@ namespace CustomVisualScripting.Editor.Nodes.Views
 
                 var rect = nodeView.GetPosition();
                 var xy = NodeViewBoundsUtils.GetAuthoritativeNodeTopLeft(nodeView);
-                var width = Mathf.Max(rect.width, minW);
-                var height = Mathf.Max(rect.height, minH);
+                var width = Mathf.Max(Mathf.Max(rect.width, 0f), minW);
+                var height = Mathf.Max(Mathf.Max(rect.height, 0f), minH);
                 nodeView.SetPosition(new Rect(xy.x, xy.y, width, height));
             }
         }
@@ -601,256 +525,6 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             }
         }
 
-        private void AutoLayoutIfNeeded(IReadOnlyList<BaseNodeView> nodeViews)
-        {
-            if (nodeViews == null || nodeViews.Count == 0)
-                return;
-            if (!HasHeavyOverlap(nodeViews))
-                return;
-
-            ApplyDagAutoLayout(nodeViews);
-            if (HasHeavyOverlap(nodeViews))
-                ApplyDagAutoLayout(nodeViews, 420f, 280f);
-        }
-
-        private void ApplyDagAutoLayout(IReadOnlyList<BaseNodeView> nodeViews, float spacingX = 280f, float spacingY = 180f)
-        {
-            var customViews = nodeViews
-                .Where(v => v?.nodeTarget is CustomBaseNode)
-                .ToList();
-            if (customViews.Count == 0)
-                return;
-
-            var nodeById = new Dictionary<string, BaseNodeView>(StringComparer.Ordinal);
-            foreach (var view in customViews)
-            {
-                var node = view.nodeTarget as CustomBaseNode;
-                if (node != null && !string.IsNullOrEmpty(node.NodeId))
-                    nodeById[node.NodeId] = view;
-            }
-            if (nodeById.Count == 0)
-                return;
-
-            var outgoing = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
-            var incoming = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
-            var incomingCount = new Dictionary<string, int>(StringComparer.Ordinal);
-            foreach (var nodeId in nodeById.Keys)
-            {
-                outgoing[nodeId] = new HashSet<string>(StringComparer.Ordinal);
-                incoming[nodeId] = new HashSet<string>(StringComparer.Ordinal);
-                incomingCount[nodeId] = 0;
-            }
-
-            if (_subGraph?.Edges != null)
-            {
-                foreach (var edge in _subGraph.Edges)
-                {
-                    if (edge == null || string.IsNullOrEmpty(edge.FromNodeId) || string.IsNullOrEmpty(edge.ToNodeId))
-                        continue;
-                    if (!nodeById.ContainsKey(edge.FromNodeId) || !nodeById.ContainsKey(edge.ToNodeId))
-                        continue;
-                    if (edge.FromNodeId == edge.ToNodeId)
-                        continue;
-
-                    if (outgoing[edge.FromNodeId].Add(edge.ToNodeId))
-                    {
-                        incoming[edge.ToNodeId].Add(edge.FromNodeId);
-                        incomingCount[edge.ToNodeId]++;
-                    }
-                }
-            }
-
-            var nodeTypeById = new Dictionary<string, NodeType>(StringComparer.Ordinal);
-            if (_subGraph?.Nodes != null)
-            {
-                foreach (var n in _subGraph.Nodes)
-                {
-                    if (n != null && !string.IsNullOrEmpty(n.Id))
-                        nodeTypeById[n.Id] = n.Type;
-                }
-            }
-
-            var inDegreeOriginal = incomingCount.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
-            var depthById = new Dictionary<string, int>(StringComparer.Ordinal);
-            var rootIds = incomingCount
-                .Where(kv => kv.Value == 0)
-                .Select(kv => kv.Key)
-                .OrderBy(id => id, StringComparer.Ordinal)
-                .ToList();
-            foreach (var rootId in rootIds)
-                depthById[rootId] = 0;
-            var queue = new Queue<string>(rootIds);
-
-            while (queue.Count > 0)
-            {
-                var current = queue.Dequeue();
-                int currentDepth = depthById.TryGetValue(current, out var d) ? d : 0;
-
-                foreach (var next in outgoing[current].OrderBy(id => id, StringComparer.Ordinal))
-                {
-                    int nextDepth = currentDepth + 1;
-                    if (!depthById.TryGetValue(next, out var existingDepth) || nextDepth > existingDepth)
-                        depthById[next] = nextDepth;
-
-                    incomingCount[next]--;
-                    if (incomingCount[next] == 0)
-                        queue.Enqueue(next);
-                }
-            }
-
-            int maxDepth = depthById.Count == 0 ? 0 : depthById.Values.Max();
-            var unresolvedIds = nodeById.Keys
-                .Where(id => !depthById.ContainsKey(id))
-                .OrderBy(id => id, StringComparer.Ordinal)
-                .ToList();
-            for (int i = 0; i < unresolvedIds.Count; i++)
-                depthById[unresolvedIds[i]] = maxDepth + 1 + i;
-
-            var layers = depthById
-                .GroupBy(kv => kv.Value)
-                .OrderBy(g => g.Key)
-                .ToDictionary(
-                    g => g.Key,
-                    g => g.Select(kv => kv.Key).ToList());
-
-            var laneCache = new Dictionary<string, int>(StringComparer.Ordinal);
-            int GetBranchLane(string nodeId, HashSet<string> visiting = null)
-            {
-                if (laneCache.TryGetValue(nodeId, out var cached))
-                    return cached;
-
-                if (nodeTypeById.TryGetValue(nodeId, out var type))
-                {
-                    if (type == NodeType.FlowIf)
-                    {
-                        laneCache[nodeId] = 1;
-                        return 1;
-                    }
-                    if (type == NodeType.FlowElse)
-                    {
-                        laneCache[nodeId] = 2;
-                        return 2;
-                    }
-                }
-
-                visiting ??= new HashSet<string>(StringComparer.Ordinal);
-                if (!visiting.Add(nodeId))
-                    return 0;
-
-                int lane = 0;
-                foreach (var parent in incoming[nodeId])
-                {
-                    int parentLane = GetBranchLane(parent, visiting);
-                    if (parentLane > lane)
-                        lane = parentLane;
-                }
-                visiting.Remove(nodeId);
-                laneCache[nodeId] = lane;
-                return lane;
-            }
-
-            int TypePriority(string nodeId)
-            {
-                if (!nodeTypeById.TryGetValue(nodeId, out var type))
-                    return 50;
-
-                switch (type)
-                {
-                    case NodeType.LiteralBool:
-                    case NodeType.LiteralInt:
-                    case NodeType.LiteralFloat:
-                    case NodeType.LiteralString:
-                        return 10;
-
-                    case NodeType.MathAdd:
-                    case NodeType.MathSubtract:
-                    case NodeType.MathMultiply:
-                    case NodeType.MathDivide:
-                    case NodeType.MathModulo:
-                    case NodeType.CompareEqual:
-                    case NodeType.CompareGreater:
-                    case NodeType.CompareLess:
-                    case NodeType.CompareNotEqual:
-                    case NodeType.CompareGreaterOrEqual:
-                    case NodeType.CompareLessOrEqual:
-                    case NodeType.LogicalAnd:
-                    case NodeType.LogicalOr:
-                    case NodeType.LogicalNot:
-                    case NodeType.MathfAbs:
-                    case NodeType.MathfMax:
-                    case NodeType.MathfMin:
-                    case NodeType.IntParse:
-                    case NodeType.FloatParse:
-                    case NodeType.ToStringConvert:
-                    case NodeType.UnityVector3:
-                    case NodeType.UnityGetPosition:
-                        return 20;
-
-                    case NodeType.FlowIf:
-                    case NodeType.FlowElse:
-                    case NodeType.FlowFor:
-                    case NodeType.FlowWhile:
-                        return 30;
-
-                    case NodeType.ConsoleWriteLine:
-                    case NodeType.DebugLog:
-                    case NodeType.UnitySetPosition:
-                        return 40;
-
-                    default:
-                        return 50;
-                }
-            }
-
-            foreach (var layer in layers.Values)
-            {
-                layer.Sort((a, b) =>
-                {
-                    int laneCmp = GetBranchLane(a).CompareTo(GetBranchLane(b));
-                    if (laneCmp != 0) return laneCmp;
-
-                    int typeCmp = TypePriority(a).CompareTo(TypePriority(b));
-                    if (typeCmp != 0) return typeCmp;
-
-                    int inCmp = inDegreeOriginal[a].CompareTo(inDegreeOriginal[b]);
-                    if (inCmp != 0) return inCmp;
-
-                    int outCmp = outgoing[b].Count.CompareTo(outgoing[a].Count);
-                    if (outCmp != 0) return outCmp;
-
-                    return StringComparer.Ordinal.Compare(a, b);
-                });
-            }
-
-            float columnGap = Mathf.Max(40f, spacingX * 0.2f);
-            float rowGap = Mathf.Max(24f, spacingY * 0.2f);
-            const float startX = 30f;
-            const float startY = 30f;
-            float columnX = startX;
-            foreach (var layerEntry in layers)
-            {
-                var ids = layerEntry.Value;
-                float layerMaxWidth = NodeViewBoundsUtils.DefaultGraphNodeMinWidth;
-                float rowY = startY;
-                for (int row = 0; row < ids.Count; row++)
-                {
-                    var view = nodeById[ids[row]];
-                    var rect = view.GetPosition();
-                    ResolveSubGraphNodeMinSizes(view, out var cellMinW, out var cellMinH);
-                    float width = Mathf.Max(rect.width, cellMinW);
-                    float height = Mathf.Max(rect.height, cellMinH);
-                    layerMaxWidth = Mathf.Max(layerMaxWidth, width);
-                    view.SetPosition(new Rect(
-                        columnX,
-                        rowY,
-                        width,
-                        height));
-                    rowY += height + rowGap;
-                }
-                columnX += layerMaxWidth + columnGap;
-            }
-        }
-
         private static void RefreshNodeViewsLayout(IReadOnlyList<BaseNodeView> nodeViews)
         {
             if (nodeViews == null)
@@ -866,26 +540,6 @@ namespace CustomVisualScripting.Editor.Nodes.Views
                 NodeViewBoundsUtils.ApplyNodeMinStyle(nodeView, minW, minH);
                 NodeViewBoundsUtils.SyncNodeRectToLayout(nodeView, minW, minH);
             }
-        }
-
-        private static bool HasHeavyOverlap(IReadOnlyList<BaseNodeView> nodeViews)
-        {
-            if (nodeViews.Count <= 1)
-                return false;
-
-            int overlaps = 0;
-            for (int i = 0; i < nodeViews.Count; i++)
-            {
-                var a = nodeViews[i].GetPosition();
-                for (int j = i + 1; j < nodeViews.Count; j++)
-                {
-                    var b = nodeViews[j].GetPosition();
-                    if (a.Overlaps(b))
-                        overlaps++;
-                }
-            }
-
-            return overlaps >= System.Math.Max(1, nodeViews.Count / 3);
         }
 
         private void MakePanelResizable()
