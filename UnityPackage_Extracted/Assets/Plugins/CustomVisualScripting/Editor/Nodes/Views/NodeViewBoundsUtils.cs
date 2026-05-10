@@ -663,6 +663,8 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             element.style.borderLeftColor   = color;
         }
 
+        public static Color GetNodeTypeOutlineColor(NodeType type) => ResolveNodeOutlineColor(type);
+
         private static Color ResolveNodeOutlineColor(NodeType type)
         {
             switch (type)
