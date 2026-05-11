@@ -955,4 +955,28 @@ else
         Assert.Contains("int x = 1;", output);
         Assert.Contains("int x = 2;", output);
     }
+
+    [Fact]
+    public void ConditionSubGraph_VariableRefStub_CopiesInitializerValueFromOuterScope()
+    {
+        var code = @"
+int score = 72;
+string grade = """";
+
+if (score >= 90)
+{
+    grade = ""A"";
+}";
+        var result = _parser.Parse(code);
+        Assert.False(result.HasErrors, string.Join("\n", result.Errors));
+
+        var ifNode = result.Graph.Nodes.FirstOrDefault(n => n.Type == NodeType.FlowIf);
+        Assert.NotNull(ifNode);
+        Assert.NotNull(ifNode!.ConditionSubGraph);
+
+        var scoreStub = ifNode.ConditionSubGraph!.Nodes.FirstOrDefault(
+            n => n.VariableName == "score" && n.Type == NodeType.LiteralInt);
+        Assert.NotNull(scoreStub);
+        Assert.Equal("72", scoreStub!.Value);
+    }
 }
