@@ -149,20 +149,32 @@ namespace CustomVisualScripting.Editor.Windows
         {
             if (_graphHost == null) return;
             _graphHost.Clear();
+
+            BaseGraphView activeView = null;
             if (string.Equals(_activeTabId, FileTabId, StringComparison.Ordinal))
             {
+                activeView = _graphView;
                 if (_graphView != null)
                     _graphHost.Add(_graphView);
-                return;
             }
-            if (_subspaceRuntimes.TryGetValue(_activeTabId, out var runtime) && runtime?.GraphView != null)
+            else if (_subspaceRuntimes.TryGetValue(_activeTabId, out var runtime) && runtime?.GraphView != null)
+            {
+                activeView = runtime.GraphView;
                 _graphHost.Add(runtime.GraphView);
+            }
+
+            _nodeToolbar?.UpdateGraphView(activeView);
         }
 
         public void OpenSubspaceFromNode(string nodeId, SubspaceKind subspaceKind)
         {
             if (string.IsNullOrWhiteSpace(nodeId)) return;
-            if (!string.Equals(_activeTabId, FileTabId, StringComparison.Ordinal)) return;
+
+            // Sync current subspace so nested node data is up-to-date before searching
+            if (!string.Equals(_activeTabId, FileTabId, StringComparison.Ordinal) &&
+                _subspaceRuntimes.TryGetValue(_activeTabId, out var currentRuntime))
+                SyncSubspaceRuntime(currentRuntime);
+
             var descriptor = EnsureSubspaceTab(nodeId, subspaceKind);
             if (descriptor == null) return;
             if (!_subspaceRuntimes.ContainsKey(descriptor.Id))
@@ -325,20 +337,62 @@ namespace CustomVisualScripting.Editor.Windows
             return nodeData != null;
         }
 
-        private NodeData FindNodeData(string nodeId)
+        private NodeData FindNodeData(string nodeId) => FindNodeDataDeep(nodeId);
+
+        private NodeData FindNodeDataDeep(string nodeId)
         {
-            return _currentGraph?.LogicGraph?.Nodes?.FirstOrDefault(n => string.Equals(n.Id, nodeId, StringComparison.Ordinal));
+            if (_currentGraph?.LogicGraph == null) return null;
+            return SearchGraphDeep(_currentGraph.LogicGraph, nodeId);
+        }
+
+        private static NodeData SearchGraphDeep(GraphData graph, string nodeId)
+        {
+            if (graph?.Nodes == null) return null;
+            foreach (var node in graph.Nodes)
+            {
+                if (string.Equals(node.Id, nodeId, StringComparison.Ordinal))
+                    return node;
+                var found = SearchSubGraphsDeep(node, nodeId);
+                if (found != null) return found;
+            }
+            return null;
+        }
+
+        private static NodeData SearchSubGraphsDeep(NodeData node, string nodeId)
+        {
+            NodeData result;
+            if (node.ConditionSubGraph != null)
+            {
+                result = SearchGraphDeep(node.ConditionSubGraph, nodeId);
+                if (result != null) return result;
+            }
+            if (node.BodySubGraph != null)
+            {
+                result = SearchGraphDeep(node.BodySubGraph, nodeId);
+                if (result != null) return result;
+            }
+            if (node.InitSubGraph != null)
+            {
+                result = SearchGraphDeep(node.InitSubGraph, nodeId);
+                if (result != null) return result;
+            }
+            if (node.IncrementSubGraph != null)
+            {
+                result = SearchGraphDeep(node.IncrementSubGraph, nodeId);
+                if (result != null) return result;
+            }
+            return null;
         }
 
         private NodeData FindNodeDataOrSyncFromView(string nodeId)
         {
-            var nodeData = FindNodeData(nodeId);
+            var nodeData = FindNodeDataDeep(nodeId);
             if (nodeData != null) return nodeData;
 
             if (_graphView != null && _internalGraph != null)
             {
                 SyncFullGraphFromView();
-                return FindNodeData(nodeId);
+                return FindNodeDataDeep(nodeId);
             }
 
             return null;

@@ -124,6 +124,9 @@ namespace CustomVisualScripting.Editor.Windows
 
         private void RecreateGraphView()
         {
+            // Явно отсоединяем старый view до Dispose, чтобы Unity не
+            // рендерил его после пересоздания (иначе старые ноды «висят»)
+            _graphView?.RemoveFromHierarchy();
             CleanupGraph();
             _graphHost?.Clear();
             UpdateGraphView();
