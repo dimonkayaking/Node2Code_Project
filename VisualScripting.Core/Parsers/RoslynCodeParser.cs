@@ -99,6 +99,7 @@ namespace VisualScripting.Core.Parsers
         }
 
         private bool _inSubGraph;
+        private GraphData _rootGraph = null!;
         private readonly Stack<GraphData> _graphStack = new Stack<GraphData>();
         private readonly Stack<Dictionary<string, string>?> _varRefStack = new Stack<Dictionary<string, string>?>();
         private Dictionary<string, string>? _subGraphVarRefs;
@@ -107,6 +108,7 @@ namespace VisualScripting.Core.Parsers
         {
             _nodeCounter = 0;
             _graph = new GraphData();
+            _rootGraph = _graph;
             _errors = new List<string>();
             _symbolScopes.Clear();
             _typeScopes.Clear();
@@ -1077,19 +1079,65 @@ namespace VisualScripting.Core.Parsers
                 _ => NodeType.LiteralInt
             };
 
+            var value = "";
+            var expressionOverride = "";
+            if (TryGetSymbol(varName, out var sourceId))
+            {
+                var source = FindNodeByIdInTree(_rootGraph, sourceId);
+                if (source != null)
+                {
+                    if (IsLiteralNodeType(source.Type))
+                    {
+                        value = source.Value ?? "";
+                        expressionOverride = source.ExpressionOverride ?? "";
+                    }
+                    else if (!string.IsNullOrEmpty(source.ExpressionOverride))
+                    {
+                        expressionOverride = source.ExpressionOverride;
+                        value = source.Value ?? "";
+                    }
+                }
+            }
+
             var id = NewId();
             _graph.Nodes.Add(new NodeData
             {
                 Id = id,
                 Type = litType,
-                Value = "",
+                Value = value,
                 ValueType = vType,
-                VariableName = varName
+                VariableName = varName,
+                ExpressionOverride = expressionOverride
             });
 
             if (_subGraphVarRefs != null)
                 _subGraphVarRefs[varName] = id;
             return id;
+        }
+
+        /// <summary>Ищет ноду по id в корневом графе и во всех вложенных подграфах (условие, тело, for-init и т.д.).</summary>
+        private static NodeData? FindNodeByIdInTree(GraphData? graph, string nodeId)
+        {
+            if (graph == null || string.IsNullOrEmpty(nodeId))
+                return null;
+
+            foreach (var n in graph.Nodes)
+            {
+                if (n.Id == nodeId)
+                    return n;
+            }
+
+            foreach (var n in graph.Nodes)
+            {
+                var found = FindNodeByIdInTree(n.ConditionSubGraph, nodeId)
+                            ?? FindNodeByIdInTree(n.BodySubGraph, nodeId)
+                            ?? FindNodeByIdInTree(n.InitSubGraph, nodeId)
+                            ?? FindNodeByIdInTree(n.IncrementSubGraph, nodeId);
+                if (found != null)
+                    return found;
+            }
+
+            return null;
         }
 
         private static IReadOnlyList<StatementSyntax> ExpandStatement(StatementSyntax statement)

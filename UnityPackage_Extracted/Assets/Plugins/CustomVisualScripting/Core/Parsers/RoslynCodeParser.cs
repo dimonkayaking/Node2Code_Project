@@ -26,6 +26,7 @@ namespace VisualScripting.Core.Parsers
 
         private int _nodeCounter;
         private GraphData _graph;
+        private GraphData _rootGraph;
         private List<string> _errors;
         private readonly Dictionary<string, string> _symbolToNodeId = new Dictionary<string, string>();
         private readonly Dictionary<string, string> _variableTypes = new Dictionary<string, string>();
@@ -40,6 +41,7 @@ namespace VisualScripting.Core.Parsers
         {
             _nodeCounter = 0;
             _graph = new GraphData();
+            _rootGraph = _graph;
             _errors = new List<string>();
             _symbolToNodeId.Clear();
             _variableTypes.Clear();
@@ -1013,12 +1015,25 @@ namespace VisualScripting.Core.Parsers
                 _ => NodeType.LiteralInt
             };
 
+            var value = "";
+            if (_symbolToNodeId.TryGetValue(varName, out var sourceId))
+            {
+                var source = FindNodeByIdInTree(_rootGraph, sourceId);
+                if (source != null)
+                {
+                    if (IsLiteralNodeType(source.Type))
+                        value = source.Value ?? "";
+                    else if (!string.IsNullOrEmpty(source.ExpressionOverride))
+                        value = source.Value ?? "";
+                }
+            }
+
             var id = NewId();
             _graph.Nodes.Add(new NodeData
             {
                 Id = id,
                 Type = litType,
-                Value = "",
+                Value = value,
                 ValueType = vType,
                 VariableName = varName,
                 // Marker: this node is a variable reference helper, not a statement assignment target.
