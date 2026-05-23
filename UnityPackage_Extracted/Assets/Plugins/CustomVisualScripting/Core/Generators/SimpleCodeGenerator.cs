@@ -15,7 +15,74 @@ namespace VisualScripting.Core.Generators
         private Stack<HashSet<string>> _scopeStack = new();
         private HashSet<string> _emitted = new();
 
+        // Метаданные пользовательских методов; задаётся через перегрузку Generate/GenerateMethodBody.
+        private IReadOnlyDictionary<string, MethodInfo> _methods = new Dictionary<string, MethodInfo>();
+
         public string GenerateCode(GraphData graph) => Generate(graph);
+
+        /// <summary>Генерация с учётом метаданных пользовательских методов.</summary>
+        public string Generate(GraphData graph, IReadOnlyDictionary<string, MethodInfo> methods)
+        {
+            _methods = methods ?? new Dictionary<string, MethodInfo>();
+            var result = Generate(graph);
+            _methods = new Dictionary<string, MethodInfo>(); // сбрасываем после использования
+            return result;
+        }
+
+        /// <summary>
+        /// Генерирует тело метода (без сигнатуры и фигурных скобок).
+        /// Параметры метода трактуются как уже объявленные переменные.
+        /// </summary>
+        public string GenerateMethodBody(GraphData bodyGraph, MethodInfo def,
+            IReadOnlyDictionary<string, MethodInfo>? methods = default)
+        {
+            if (bodyGraph == null || bodyGraph.Nodes == null || bodyGraph.Nodes.Count == 0)
+            {
+                return def.ReturnType == "void"
+                    ? "    // Тело пусто"
+                    : $"    return {GetDefaultValue(def.ReturnType)};";
+            }
+
+            _methods    = methods ?? new Dictionary<string, MethodInfo>();
+            _graph      = bodyGraph;
+            _map        = bodyGraph.Nodes.ToDictionary(n => n.Id);
+            _scopeStack = new Stack<HashSet<string>>();
+            PushScope();
+            _emitted    = new HashSet<string>();
+
+            // Параметры уже объявлены в сигнатуре — вносим в скоуп
+            if (def.ParamNames != null)
+                foreach (var pn in def.ParamNames)
+                    if (!string.IsNullOrEmpty(pn)) DeclareInCurrentScope(pn);
+
+            var hasIncomingExec = new HashSet<string>(
+                bodyGraph.Edges.Where(e => IsExecInPort(e.ToPort)).Select(e => e.ToNodeId));
+
+            var roots = bodyGraph.Nodes
+                .Where(n => n.Type != NodeType.MethodParam)          // param-ноды не операторы
+                .Where(n => !hasIncomingExec.Contains(n.Id))
+                .Where(n => IsStatementEntryNode(n))
+                .Where(n => !IsChainedElseBranchTarget(n.Id))
+                .ToList();
+
+            var sb = new StringBuilder();
+            var orderedRoots = TopologicallyOrderRoots(roots);
+            foreach (var root in orderedRoots)
+                EmitChain(root.Id, sb, 1);
+
+            // Для non-void методов без явного Return-узла добавляем fallback return.
+            // Если в графе есть хотя бы одна ReturnValue-нода — return уже эмитирован
+            // внутри EmitChain → EmitReturn.
+            if (def.ReturnType != "void" &&
+                !bodyGraph.Nodes.Any(n => n.Type == NodeType.ReturnValue))
+            {
+                sb.AppendLine($"    return {GetDefaultValue(def.ReturnType)};");
+            }
+
+            var result = sb.ToString().TrimEnd();
+            _methods = new Dictionary<string, MethodInfo>(); // сбрасываем
+            return result;
+        }
 
         public string Generate(GraphData graph)
         {
@@ -194,6 +261,19 @@ namespace VisualScripting.Core.Generators
                     EmitDebugLog(node, sb, pad);
                     break;
 
+                case NodeType.MethodCall:
+                    EmitMethodCallStatement(node, sb, pad);
+                    break;
+
+                case NodeType.MethodParam:
+                    // Param-ноды — объявления параметров, а не операторы; пропускаем.
+                    break;
+
+                case NodeType.ReturnValue:
+                    EmitReturn(node, sb, pad);
+                    // Нет exec-out → цепочка обрывается естественным образом (next == null).
+                    return;
+
                 default:
                     EmitValueStatement(node, sb, pad);
                     break;
@@ -285,11 +365,24 @@ namespace VisualScripting.Core.Generators
             if (node == null)
                 return "???";
 
+            // MethodParam — предобъявленный параметр; используем его имя как выражение
+            if (node.Type == NodeType.MethodParam)
+                return !string.IsNullOrEmpty(node.VariableName) ? node.VariableName : "???";
+
+            // MethodCall — генерируем вызов (VariableName == MethodName, не переменная-результат)
+            if (node.Type == NodeType.MethodCall)
+                return BuildMethodCallExpr(node.Id);
+
             if (!string.IsNullOrEmpty(node.VariableName))
                 return node.VariableName;
 
             if (IsLiteral(node.Type))
+            {
+                if (!string.IsNullOrEmpty(node.ExpressionOverride) &&
+                    !node.ExpressionOverride.StartsWith(SubGraphVariableRefMarker, StringComparison.Ordinal))
+                    return node.ExpressionOverride;
                 return LiteralRhs(node);
+            }
 
             // Централизованный путь генерации выражений:
             // поддерживает math/compare/logical/parse/ToString/Mathf и т.д.
@@ -594,6 +687,69 @@ namespace VisualScripting.Core.Generators
             sb.AppendLine($"{pad}}}");
         }
 
+        private void EmitMethodCallStatement(NodeData node, StringBuilder sb, string pad)
+        {
+            sb.AppendLine($"{pad}{BuildMethodCallExpr(node.Id)};");
+        }
+
+        private void EmitReturn(NodeData node, StringBuilder sb, string pad)
+        {
+            var valueEdge = _graph.Edges.FirstOrDefault(
+                e => e.ToNodeId == node.Id && e.ToPort == "value");
+            if (valueEdge != null)
+                sb.AppendLine($"{pad}return {EmitExpr(valueEdge.FromNodeId)};");
+            else
+                sb.AppendLine($"{pad}return;");
+        }
+
+        /// <summary>
+        /// Строит выражение вызова пользовательского метода: <c>Name(arg0, arg1, ...)</c>.
+        /// Читает входные порты param0…paramN из текущего графа.
+        /// </summary>
+        private string BuildMethodCallExpr(string nodeId)
+        {
+            if (!_map.TryGetValue(nodeId, out var node)) return "???";
+
+            var methodId   = node.Value;       // MethodId  (GUID)
+            var methodName = node.VariableName; // MethodName (отображаемое имя)
+
+            _methods.TryGetValue(methodId, out var def);
+
+            // Если метод не найден в реестре (например, локальная inline-функция),
+            // определяем количество аргументов по фактическим param*-рёбрам в графе.
+            int paramCount;
+            if (def?.ParamNames != null)
+            {
+                paramCount = def.ParamNames.Count;
+            }
+            else
+            {
+                paramCount = _graph.Edges.Count(e =>
+                    e.ToNodeId == nodeId &&
+                    e.ToPort.StartsWith("param", StringComparison.Ordinal) &&
+                    int.TryParse(e.ToPort.AsSpan("param".Length), out _));
+            }
+
+            var args = new List<string>();
+            for (int i = 0; i < paramCount; i++)
+            {
+                var port   = $"param{i}";
+                var inEdge = _graph.Edges.FirstOrDefault(e => e.ToNodeId == nodeId && e.ToPort == port);
+                if (inEdge != null)
+                {
+                    args.Add(EmitExpr(inEdge.FromNodeId));
+                }
+                else
+                {
+                    var paramType = (def?.ParamTypes != null && i < def.ParamTypes.Count)
+                        ? def.ParamTypes[i] : "int";
+                    args.Add(GetDefaultValue(paramType));
+                }
+            }
+
+            return $"{methodName}({string.Join(", ", args)})";
+        }
+
         private void EmitConsoleWriteLine(NodeData node, StringBuilder sb, string pad)
         {
             var msgEdge = _graph.Edges.FirstOrDefault(
@@ -640,11 +796,24 @@ namespace VisualScripting.Core.Generators
 
             var node = _map[nodeId];
 
+            // MethodCall: VariableName == MethodName (не переменная-результат) — строим вызов
+            if (node.Type == NodeType.MethodCall)
+                return BuildMethodCallExpr(nodeId);
+
+            // MethodParam: предобъявленный параметр — просто имя
+            if (node.Type == NodeType.MethodParam)
+                return !string.IsNullOrEmpty(node.VariableName) ? node.VariableName : "???";
+
             if (!string.IsNullOrEmpty(node.VariableName) && nodeId != selfId)
                 return node.VariableName;
 
             if (IsLiteral(node.Type))
+            {
+                if (!string.IsNullOrEmpty(node.ExpressionOverride) &&
+                    !node.ExpressionOverride.StartsWith(SubGraphVariableRefMarker, StringComparison.Ordinal))
+                    return node.ExpressionOverride;
                 return LiteralRhs(node);
+            }
 
             if (IsMath(node.Type))
             {
@@ -842,9 +1011,22 @@ namespace VisualScripting.Core.Generators
 
         private bool IsStatementEntryNode(NodeData n)
         {
+            // Param-ноды — объявления, а не операторы
+            if (n.Type == NodeType.MethodParam) return false;
+
             if (n.Type is NodeType.FlowIf or NodeType.FlowElse or NodeType.FlowFor or NodeType.FlowWhile
-                or NodeType.ConsoleWriteLine or NodeType.DebugLog)
+                or NodeType.ConsoleWriteLine or NodeType.DebugLog or NodeType.ReturnValue)
                 return true;
+
+            // MethodCall — оператор, если:
+            //   • метод void (нет полезного возврата), ИЛИ
+            //   • выходной порт ни к чему не подключён (результат не используется)
+            if (n.Type == NodeType.MethodCall)
+            {
+                if (_methods.TryGetValue(n.Value, out var def) && def.ReturnType != "void")
+                    return !_graph.Edges.Any(e => e.FromNodeId == n.Id && e.FromPort == "output");
+                return true; // void method or unknown → always a statement
+            }
 
             if (IsLiteral(n.Type) && !string.IsNullOrEmpty(n.VariableName) &&
                 !IsPlaceholderVariableRefLiteral(n) && !IsSubGraphVariableRefLiteral(n))

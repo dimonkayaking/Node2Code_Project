@@ -21,7 +21,12 @@ namespace CustomVisualScripting.Editor
         {
             var nodeData = customNode.ToNodeData();
             nodeData.Id = customNode.NodeId;
-            nodeData.VariableName = customNode.variableName;
+            // NOTE: VariableName is intentionally NOT overridden here.
+            // ToNodeData() is already the source of truth for each node type:
+            //   • regular nodes  → base.ToNodeData() sets VariableName = variableName
+            //   • MethodParamNode → overrides VariableName with ParamName
+            // Overwriting with customNode.variableName (base field) would erase
+            // any custom VariableName set by a subclass (e.g. MethodParamNode).
 
             if (customNode is IntNode intNode)
             {

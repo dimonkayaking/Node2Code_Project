@@ -26,6 +26,8 @@ namespace VisualScripting.Core.Parsers
                 NodeType.LogicalAnd or NodeType.LogicalOr or NodeType.LogicalNot => "result",
                 NodeType.IntParse or NodeType.FloatParse or NodeType.ToStringConvert
                     or NodeType.MathfAbs or NodeType.MathfMax or NodeType.MathfMin => "output",
+                NodeType.MethodCall  => "output", // выходной порт call-ноды
+                NodeType.MethodParam => "value",  // выходной порт param-ноды
                 _ => "output"
             };
         }
@@ -73,7 +75,7 @@ namespace VisualScripting.Core.Parsers
                 return false;
 
             return node.Type is NodeType.FlowIf or NodeType.FlowElse or NodeType.FlowFor or NodeType.FlowWhile
-                or NodeType.ConsoleWriteLine or NodeType.DebugLog;
+                or NodeType.ConsoleWriteLine or NodeType.DebugLog or NodeType.ReturnValue;
         }
 
         private string NewId() => $"node_{_nodeCounter++}";

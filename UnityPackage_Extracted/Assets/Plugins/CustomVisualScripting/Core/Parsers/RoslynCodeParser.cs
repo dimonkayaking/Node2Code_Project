@@ -37,6 +37,20 @@ namespace VisualScripting.Core.Parsers
         private readonly Stack<Dictionary<string, string>> _varRefStack = new Stack<Dictionary<string, string>>();
         private Dictionary<string, string> _subGraphVarRefs;
 
+        // Пользовательские методы, переданные из GeneratorBridge/ParserBridge
+        private IReadOnlyList<MethodInfo> _knownMethods = System.Array.Empty<MethodInfo>();
+
+        // Методы, обнаруженные при парсинге как inline-локальные функции
+        private List<MethodInfo> _discoveredMethods = new List<MethodInfo>();
+        // Флаг: предотвращает рекурсивный парсинг тел вложенных локальных функций
+        private bool _isParsingFunctionBody;
+
+        /// <summary>Передаёт метаданные зарегистрированных методов до вызова Parse().</summary>
+        public void SetKnownMethods(IReadOnlyList<MethodInfo> methods)
+        {
+            _knownMethods = methods ?? System.Array.Empty<MethodInfo>();
+        }
+
         public ParseResult Parse(string code)
         {
             _nodeCounter = 0;
@@ -49,6 +63,8 @@ namespace VisualScripting.Core.Parsers
             _graphStack.Clear();
             _varRefStack.Clear();
             _subGraphVarRefs = null;
+            _discoveredMethods = new List<MethodInfo>();
+            _isParsingFunctionBody = false;
 
             if (string.IsNullOrWhiteSpace(code))
             {
@@ -87,7 +103,12 @@ namespace VisualScripting.Core.Parsers
         }
 
         private ParseResult Result() =>
-            new ParseResult { Graph = _graph, Errors = _errors };
+            new ParseResult
+            {
+                Graph             = _graph,
+                Errors            = _errors,
+                DiscoveredMethods = _discoveredMethods
+            };
 
         private static string FormatUserLocation(SyntaxTree tree, TextSpan span)
         {
@@ -102,6 +123,24 @@ namespace VisualScripting.Core.Parsers
 
         private void VisitMethodBody(BlockSyntax body)
         {
+            // ── Pre-scan: собираем локальные функции и регистрируем их сигнатуры ──
+            var localFuncSyntaxList = body.Statements
+                .OfType<LocalFunctionStatementSyntax>()
+                .ToList();
+
+            var localFuncInfoList = localFuncSyntaxList
+                .Select(ExtractLocalFunctionInfo)
+                .Where(m => m != null)
+                .ToList();
+
+            if (localFuncInfoList.Count > 0)
+            {
+                var merged = new List<MethodInfo>(_knownMethods);
+                merged.AddRange(localFuncInfoList);
+                _knownMethods = merged;
+            }
+
+            // ── Main parse pass ──────────────────────────────────────────────────
             string prevFlowNode = null;
             var prevFlowPort = PortIds.ExecOut;
 
@@ -149,6 +188,31 @@ namespace VisualScripting.Core.Parsers
                     }
                 }
             }
+
+            // ── Post-scan: парсим тела локальных функций и добавляем в DiscoveredMethods ──
+            // Флаг предотвращает рекурсию (вложенные локальные функции пропускаются).
+            if (!_isParsingFunctionBody && localFuncInfoList.Count > 0)
+            {
+                _isParsingFunctionBody = true;
+                try
+                {
+                    for (int i = 0; i < localFuncSyntaxList.Count; i++)
+                    {
+                        var lf = localFuncSyntaxList[i];
+                        var mi = localFuncInfoList[i];
+                        if (mi == null) continue;
+
+                        if (lf.Body != null)
+                            mi.BodyGraph = ParseMethodBodyGraph(lf.Body, mi);
+
+                        _discoveredMethods.Add(mi);
+                    }
+                }
+                finally
+                {
+                    _isParsingFunctionBody = false;
+                }
+            }
         }
 
         private bool ShouldBreakFlowAfter(string nodeId)
@@ -175,13 +239,131 @@ namespace VisualScripting.Core.Parsers
                     return VisitLocalDeclaration(local, prevNode, prevPort);
                 case ExpressionStatementSyntax exprStmt:
                     return VisitExpressionStatement(exprStmt, prevNode, prevPort);
+                case ReturnStatementSyntax returnStmt:
+                    return VisitReturnStatement(returnStmt, prevNode, prevPort);
                 case ForStatementSyntax forStmt:
                     return VisitForStatement(forStmt, prevNode, prevPort);
                 case WhileStatementSyntax whileStmt:
                     return VisitWhileStatement(whileStmt, prevNode, prevPort);
+                case LocalFunctionStatementSyntax:
+                    // Объявления локальных функций внутри кода игнорируются —
+                    // методы определяются через панель Methods.
+                    return null;
+
                 default:
                     ReportUnsupported(stmt);
                     return null;
+            }
+        }
+
+        private FlowHost VisitReturnStatement(ReturnStatementSyntax stmt, string prevNode, string prevPort)
+        {
+            var retId = NewId();
+            _graph.Nodes.Add(new NodeData
+            {
+                Id           = retId,
+                Type         = NodeType.ReturnValue,
+                Value        = "",
+                ValueType    = "",
+                VariableName = ""
+            });
+
+            if (prevNode != null)
+                AddEdge(prevNode, prevPort, retId, PortIds.ExecIn);
+
+            if (stmt.Expression != null)
+            {
+                var exprId = VisitExpression(stmt.Expression, false, null, out var unsupported);
+                if (!unsupported && exprId != null)
+                    AddEdge(exprId, GetDataOutPortForNodeId(exprId), retId, "value");
+            }
+
+            // ReturnNode не имеет exec-out: последующие AddEdge для execOut будут
+            // отброшены в SupportsExecOut (ReturnValue не входит в список).
+            return new FlowHost { NodeId = retId };
+        }
+
+        /// <summary>
+        /// Парсит тело локальной функции в отдельный <see cref="GraphData"/>.
+        /// Полностью сохраняет и восстанавливает состояние парсера.
+        /// Параметры функции инжектируются как <see cref="NodeType.MethodParam"/> ноды
+        /// со стабильными ID <c>"_paramref_{name}"</c>.
+        /// </summary>
+        private GraphData ParseMethodBodyGraph(BlockSyntax body, MethodInfo methodInfo)
+        {
+            if (body == null) return new GraphData();
+
+            // ── Сохраняем состояние парсера ───────────────────────────────────────
+            var savedGraph           = _graph;
+            var savedRootGraph       = _rootGraph;
+            var savedSymbolToNodeId  = new Dictionary<string, string>(_symbolToNodeId);
+            var savedVariableTypes   = new Dictionary<string, string>(_variableTypes);
+            var savedInSubGraph      = _inSubGraph;
+            var savedSubGraphVarRefs = _subGraphVarRefs;
+            var savedKnownMethods    = _knownMethods;
+            var savedGraphStackArr   = _graphStack.ToArray();   // top-first
+            var savedVarRefStackArr  = _varRefStack.ToArray();  // top-first
+            // _nodeCounter НЕ сбрасываем — глобальная уникальность ID
+
+            try
+            {
+                // ── Переключаемся в контекст тела метода ──────────────────────────
+                var bodyGraph = new GraphData();
+                _graph       = bodyGraph;
+                _rootGraph   = bodyGraph;
+                _symbolToNodeId.Clear();
+                _variableTypes.Clear();
+                _inSubGraph      = false;
+                _subGraphVarRefs = null;
+                _graphStack.Clear();
+                _varRefStack.Clear();
+
+                // ── Инжектируем ноды-параметры ────────────────────────────────────
+                for (int i = 0; i < (methodInfo.ParamNames?.Count ?? 0); i++)
+                {
+                    var pname = methodInfo.ParamNames[i];
+                    var ptype = methodInfo.ParamTypes != null && i < methodInfo.ParamTypes.Count
+                        ? methodInfo.ParamTypes[i] : "int";
+
+                    var paramId = "_paramref_" + pname;
+                    bodyGraph.Nodes.Add(new NodeData
+                    {
+                        Id           = paramId,
+                        Type         = NodeType.MethodParam,
+                        Value        = ptype,    // хранит тип (как MethodParamNode.ToNodeData())
+                        ValueType    = ptype,
+                        VariableName = pname     // хранит имя (как MethodParamNode.ToNodeData())
+                    });
+
+                    _symbolToNodeId[pname] = paramId;
+                    _variableTypes[pname]  = ptype;
+                }
+
+                // ── Парсим тело ───────────────────────────────────────────────────
+                VisitMethodBody(body);
+
+                return bodyGraph;
+            }
+            finally
+            {
+                // ── Восстанавливаем состояние ─────────────────────────────────────
+                _graph      = savedGraph;
+                _rootGraph  = savedRootGraph;
+                _inSubGraph = savedInSubGraph;
+                _subGraphVarRefs = savedSubGraphVarRefs;
+                _knownMethods    = savedKnownMethods;
+
+                _symbolToNodeId.Clear();
+                foreach (var kvp in savedSymbolToNodeId) _symbolToNodeId[kvp.Key] = kvp.Value;
+
+                _variableTypes.Clear();
+                foreach (var kvp in savedVariableTypes) _variableTypes[kvp.Key] = kvp.Value;
+
+                // Восстанавливаем стеки (ToArray() возвращает top-first, поэтому Reverse перед Push)
+                _graphStack.Clear();
+                foreach (var g in savedGraphStackArr.Reverse()) _graphStack.Push(g);
+                _varRefStack.Clear();
+                foreach (var v in savedVarRefStackArr.Reverse()) _varRefStack.Push(v);
             }
         }
 
@@ -189,6 +371,52 @@ namespace VisualScripting.Core.Parsers
         {
             _errors.Add(
                 $"Неподдерживаемая конструкция ({FormatUserLocation(node.SyntaxTree, node.Span)}): {node.Kind()}. Поддерживаются: объявления, присваивания, +=/-=, ++/--, if/else, for/while, вызовы Parse/ToString/Mathf, Console.WriteLine.");
+        }
+
+        /// <summary>
+        /// Извлекает сигнатуру локальной функции (имя, тип возврата, параметры)
+        /// и возвращает временный <see cref="MethodInfo"/> для use в текущем разборе.
+        /// ID имеет префикс "__localfn__" и не совпадёт ни с каким зарегистрированным методом.
+        /// </summary>
+        private static MethodInfo ExtractLocalFunctionInfo(LocalFunctionStatementSyntax lf)
+        {
+            if (lf == null) return null;
+
+            var name = lf.Identifier.Text;
+            var returnTypeStr = lf.ReturnType.ToString().Trim();
+            var returnType = returnTypeStr switch
+            {
+                "void"   => "void",
+                "float"  => "float",
+                "bool"   => "bool",
+                "string" => "string",
+                _        => "int"
+            };
+
+            var paramNames = new System.Collections.Generic.List<string>();
+            var paramTypes = new System.Collections.Generic.List<string>();
+            foreach (var p in lf.ParameterList.Parameters)
+            {
+                paramNames.Add(p.Identifier.Text);
+                var typeStr = p.Type?.ToString().Trim() ?? "int";
+                paramTypes.Add(typeStr switch
+                {
+                    "float"  => "float",
+                    "bool"   => "bool",
+                    "string" => "string",
+                    _        => "int"
+                });
+            }
+
+            return new MethodInfo
+            {
+                Id         = "__localfn__" + name,
+                Name       = name,
+                ReturnType = returnType,
+                ParamNames = paramNames,
+                ParamTypes = paramTypes,
+                BodyGraph  = null
+            };
         }
 
         private string CreateDefaultLiteralNode(string typeStr, string variableName)
@@ -301,6 +529,27 @@ namespace VisualScripting.Core.Parsers
 
             if (expr is InvocationExpressionSyntax invDebug && IsDebugLog(invDebug))
                 return VisitDebugLog(invDebug, prevNode, prevPort);
+
+            // Самостоятельный вызов пользовательского метода: MyMethod(x, y); или obj.MyMethod(x, y);
+            if (expr is InvocationExpressionSyntax invUser && _knownMethods.Count > 0)
+            {
+                string candidateName = invUser.Expression switch
+                {
+                    IdentifierNameSyntax idExpr      => idExpr.Identifier.Text,
+                    MemberAccessExpressionSyntax mex => mex.Name.Identifier.Text,
+                    _                                => null
+                };
+                if (candidateName != null)
+                {
+                    var userMethod = _knownMethods.FirstOrDefault(m =>
+                        string.Equals(m.Name, candidateName, System.StringComparison.Ordinal));
+                    if (userMethod != null)
+                    {
+                        CreateMethodCallNode(userMethod, invUser, false, null, out _);
+                        return null;
+                    }
+                }
+            }
 
             if (expr is AssignmentExpressionSyntax assign && assign.Left is IdentifierNameSyntax)
             {
@@ -1317,6 +1566,59 @@ namespace VisualScripting.Core.Parsers
             t is NodeType.LiteralBool or NodeType.LiteralInt or NodeType.LiteralFloat or NodeType.LiteralString;
 
         /// <summary>
+        /// Создаёт ноду пользовательского вызова метода (<see cref="NodeType.MethodCall"/>)
+        /// и подключает аргументы к портам param0…paramN.
+        /// </summary>
+        private string CreateMethodCallNode(
+            MethodInfo def,
+            InvocationExpressionSyntax inv,
+            bool isRoot,
+            string assignVariableToRoot,
+            out bool unsupported)
+        {
+            unsupported = false;
+            var argIds = new List<string>();
+
+            foreach (var arg in inv.ArgumentList.Arguments)
+            {
+                var argId = VisitExpression(arg.Expression, false, null, out unsupported);
+                if (unsupported || argId == null) return null;
+                argIds.Add(argId);
+            }
+
+            var id = NewId();
+            // VariableName хранит имя метода (для генератора), Value — MethodId (GUID)
+            var vn = isRoot && !string.IsNullOrEmpty(assignVariableToRoot) ? assignVariableToRoot : "";
+            _graph.Nodes.Add(new NodeData
+            {
+                Id           = id,
+                Type         = NodeType.MethodCall,
+                Value        = def.Id,         // MethodId
+                VariableName = def.Name,       // MethodName — нужно генератору
+                ValueType    = def.ReturnType
+            });
+
+            for (int i = 0; i < argIds.Count; i++)
+                AddEdge(argIds[i], GetDataOutPortForNodeId(argIds[i]), id, $"param{i}");
+
+            // Если вызов присваивается переменной, создаём literal-враппер
+            if (isRoot && !string.IsNullOrEmpty(assignVariableToRoot))
+            {
+                var vType = _variableTypes.TryGetValue(assignVariableToRoot, out var t)
+                    ? t : (def.ReturnType ?? "int");
+                var litId = CreateDefaultLiteralNode(vType, assignVariableToRoot);
+                AddEdge(id, "output", litId, "inputValue");
+                var litNode = _graph.Nodes.FirstOrDefault(n => n.Id == litId);
+                if (litNode != null)
+                    litNode.ExpressionOverride = inv.ToString().Trim();
+                _symbolToNodeId[assignVariableToRoot] = litId;
+                return litId;
+            }
+
+            return id;
+        }
+
+        /// <summary>
         /// <c>Mathf.*</c> или <c>UnityEngine.Mathf.*</c> — во втором случае выражение до точки — MemberAccess с именем Mathf.
         /// </summary>
         private static bool IsMathfStaticReceiver(ExpressionSyntax expr)
@@ -1359,6 +1661,24 @@ namespace VisualScripting.Core.Parsers
             out bool unsupported)
         {
             unsupported = false;
+
+            // Прямой вызов без квалификатора: MyMethod(x, y)
+            if (inv.Expression is IdentifierNameSyntax directId)
+            {
+                // Сначала ищем в известных методах
+                if (_knownMethods.Count > 0)
+                {
+                    var userMethod = _knownMethods.FirstOrDefault(m =>
+                        string.Equals(m.Name, directId.Identifier.Text, System.StringComparison.Ordinal));
+                    if (userMethod != null)
+                        return CreateMethodCallNode(userMethod, inv, isRoot, assignVariableToRoot, out unsupported);
+                }
+
+                // Метод не найден в реестре — emit как passthrough-выражение
+                // (например, вызов локальной функции из кода; генератор подставит ExpressionOverride)
+                return CreatePassthroughExpressionNode(inv.ToString(), isRoot, assignVariableToRoot);
+            }
+
             if (inv.Expression is not MemberAccessExpressionSyntax ma)
             {
                 unsupported = true;
@@ -1397,10 +1717,44 @@ namespace VisualScripting.Core.Parsers
             if (IsMathfStaticReceiver(ma.Expression) || IsSystemMathStaticReceiver(ma.Expression))
                 return CreatePassthroughMathLiteral(inv.ToString(), isRoot, assignVariableToRoot);
 
+            // Проверяем пользовательские методы
+            if (_knownMethods.Count > 0)
+            {
+                // Вызовы без квалификатора (ma.Expression — просто имя) или через any.Method
+                // Нас интересует только простое имя: SomeName.MethodName или просто MethodName
+                var candidateName = methodName;
+                var userMethod = _knownMethods.FirstOrDefault(m =>
+                    string.Equals(m.Name, candidateName, System.StringComparison.Ordinal));
+                if (userMethod != null)
+                    return CreateMethodCallNode(userMethod, inv, isRoot, assignVariableToRoot, out unsupported);
+            }
+
             unsupported = true;
             _errors.Add(
                 $"Неподдерживаемый вызов метода ({FormatUserLocation(inv.SyntaxTree, inv.Span)}): {methodName}.");
             return null;
+        }
+
+        /// <summary>
+        /// Создаёт passthrough-ноду для произвольного вызова/выражения, которое парсер не умеет
+        /// разобрать на граф (например, вызов локальной функции или неизвестного метода).
+        /// Генератор подставит <see cref="NodeData.ExpressionOverride"/> как есть.
+        /// </summary>
+        private string CreatePassthroughExpressionNode(string expressionText, bool isRoot, string assignVariableToRoot)
+        {
+            var id = NewId();
+            var vn = isRoot && !string.IsNullOrEmpty(assignVariableToRoot) ? assignVariableToRoot : "";
+            // Тип неизвестен → int как наиболее нейтральный; генератор использует ExpressionOverride
+            _graph.Nodes.Add(new NodeData
+            {
+                Id = id,
+                Type = NodeType.LiteralInt,
+                Value = "",
+                ValueType = "int",
+                VariableName = vn,
+                ExpressionOverride = expressionText.Trim()
+            });
+            return id;
         }
 
         /// <summary>

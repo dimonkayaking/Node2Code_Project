@@ -117,9 +117,13 @@ namespace CustomVisualScripting.Editor.Windows
             var previousTabId = _activeTabId;
             if (!string.Equals(previousTabId, tabId, StringComparison.Ordinal))
             {
-                if (!string.Equals(previousTabId, FileTabId, StringComparison.Ordinal) &&
-                    _subspaceRuntimes.TryGetValue(previousTabId, out var leavingRuntime))
-                    SyncSubspaceRuntime(leavingRuntime);
+                if (!string.Equals(previousTabId, FileTabId, StringComparison.Ordinal))
+                {
+                    if (_subspaceRuntimes.TryGetValue(previousTabId, out var leavingSubspace))
+                        SyncSubspaceRuntime(leavingSubspace);
+                    else if (_methodTabRuntimes.TryGetValue(previousTabId, out var leavingMethod))
+                        SyncMethodRuntime(leavingMethod);
+                }
             }
 
             _activeTabId = tabId;
@@ -137,7 +141,12 @@ namespace CustomVisualScripting.Editor.Windows
         private void CloseTab(string tabId)
         {
             if (string.Equals(tabId, FileTabId, StringComparison.Ordinal)) return;
-            DisposeSubspaceRuntime(tabId);
+
+            if (tabId.StartsWith(MethodTabPrefix, StringComparison.Ordinal))
+                DisposeMethodRuntime(tabId);
+            else
+                DisposeSubspaceRuntime(tabId);
+
             _tabs.RemoveAll(t => string.Equals(t.Id, tabId, StringComparison.Ordinal));
             if (string.Equals(_activeTabId, tabId, StringComparison.Ordinal))
                 _activeTabId = FileTabId;
@@ -157,10 +166,17 @@ namespace CustomVisualScripting.Editor.Windows
                 if (_graphView != null)
                     _graphHost.Add(_graphView);
             }
-            else if (_subspaceRuntimes.TryGetValue(_activeTabId, out var runtime) && runtime?.GraphView != null)
+            else if (_methodTabRuntimes.TryGetValue(_activeTabId, out var methodRuntime) &&
+                     methodRuntime?.Container != null)
             {
-                activeView = runtime.GraphView;
-                _graphHost.Add(runtime.GraphView);
+                activeView = methodRuntime.BodyGraphView;
+                _graphHost.Add(methodRuntime.Container);
+            }
+            else if (_subspaceRuntimes.TryGetValue(_activeTabId, out var subspaceRuntime) &&
+                     subspaceRuntime?.GraphView != null)
+            {
+                activeView = subspaceRuntime.GraphView;
+                _graphHost.Add(subspaceRuntime.GraphView);
             }
 
             _nodeToolbar?.UpdateGraphView(activeView);
@@ -422,6 +438,7 @@ namespace CustomVisualScripting.Editor.Windows
         private void ResetTabsToFileOnly()
         {
             DisposeAllSubspaceRuntimes();
+            DisposeAllMethodRuntimes();
             _tabs.Clear();
             _tabs.Add(new TabDescriptor
             {

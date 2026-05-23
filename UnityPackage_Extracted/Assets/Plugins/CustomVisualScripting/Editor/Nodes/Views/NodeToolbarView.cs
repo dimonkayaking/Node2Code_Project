@@ -5,7 +5,10 @@ using UnityEditor;
 using UnityEngine;
 using UnityEngine.UIElements;
 using GraphProcessor;
+using CustomVisualScripting.Editor.Methods;
 using CustomVisualScripting.Editor.Nodes.Base;
+using CustomVisualScripting.Editor.Nodes.Methods;
+using CustomVisualScripting.Editor.Windows;
 
 namespace CustomVisualScripting.Editor.Nodes.Views
 {
@@ -15,207 +18,410 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         private readonly Dictionary<string, List<(string path, Type type)>> _categories;
         private VisualElement _contentContainer;
 
+        // Состояние текущего экрана панели
+        private bool _showingMethodsCategory;
+
         private static readonly Dictionary<string, Color> CategoryColors = new()
         {
-            { "Literals", HexColor("#4CAF50") },
-            { "Math", HexColor("#2196F3") },
+            { "Literals",   HexColor("#4CAF50") },
+            { "Math",       HexColor("#2196F3") },
             { "Comparison", HexColor("#FF9800") },
-            { "Logic", HexColor("#9C27B0") },
-            { "Flow", HexColor("#F44336") },
+            { "Logic",      HexColor("#9C27B0") },
+            { "Flow",       HexColor("#F44336") },
             { "Conversion", HexColor("#FFC107") },
-            { "Debug", HexColor("#FFFFFF") },
-            { "Unity", HexColor("#8D6E63") }
+            { "Debug",      HexColor("#FFFFFF") },
+            { "Unity",      HexColor("#8D6E63") }
         };
+
+        private static readonly Color MethodColor = HexColor("#00BCD4");
 
         public NodeToolbarView(BaseGraphView graphView)
         {
-            _graphView = graphView;
+            _graphView  = graphView;
             _categories = GetCategories();
 
-            style.backgroundColor = new Color(0.18f, 0.18f, 0.18f);
-            style.borderLeftWidth = 1;
-            style.borderLeftColor = new Color(0.3f, 0.3f, 0.3f);
-            style.flexDirection = FlexDirection.Column;
-            style.paddingBottom = 0;
-            style.marginBottom = 0;
+            style.backgroundColor  = new Color(0.18f, 0.18f, 0.18f);
+            style.borderLeftWidth  = 1;
+            style.borderLeftColor  = new Color(0.3f, 0.3f, 0.3f);
+            style.flexDirection    = FlexDirection.Column;
+            style.paddingBottom    = 0;
+            style.marginBottom     = 0;
 
             BuildUI();
             ShowCategories();
+
+            MethodRegistry.OnChanged += OnMethodsChanged;
+            RegisterCallback<DetachFromPanelEvent>(_ => MethodRegistry.OnChanged -= OnMethodsChanged);
         }
 
         public void UpdateGraphView(BaseGraphView newGraphView)
         {
             _graphView = newGraphView;
-            ShowCategories();
         }
+
+        // ─── Построение UI ────────────────────────────────────────────────────
 
         private void BuildUI()
         {
-            var title = new Label("Create Node");
-            title.style.fontSize = 14;
-            title.style.unityFontStyleAndWeight = FontStyle.Bold;
-            title.style.color = Color.white;
-            title.style.paddingTop = 10;
-            title.style.paddingBottom = 10;
-            title.style.paddingLeft = 12;
-            title.style.unityTextAlign = TextAnchor.MiddleCenter;
-            title.style.backgroundColor = new Color(0.22f, 0.22f, 0.22f);
-            title.style.borderBottomWidth = 1;
-            title.style.borderBottomColor = new Color(0.3f, 0.3f, 0.3f);
-            title.style.whiteSpace = WhiteSpace.NoWrap;          // запрет переноса
-            title.style.textOverflow = TextOverflow.Ellipsis;    // многоточие
-            title.style.overflow = Overflow.Hidden;
-            Add(title);
+            var header = new Label("Create Node");
+            header.style.fontSize               = 14;
+            header.style.unityFontStyleAndWeight = FontStyle.Bold;
+            header.style.color                   = Color.white;
+            header.style.paddingTop              = 10;
+            header.style.paddingBottom           = 10;
+            header.style.paddingLeft             = 12;
+            header.style.unityTextAlign          = TextAnchor.MiddleCenter;
+            header.style.backgroundColor         = new Color(0.22f, 0.22f, 0.22f);
+            header.style.borderBottomWidth       = 1;
+            header.style.borderBottomColor       = new Color(0.3f, 0.3f, 0.3f);
+            header.style.whiteSpace              = WhiteSpace.NoWrap;
+            header.style.textOverflow            = TextOverflow.Ellipsis;
+            header.style.overflow                = Overflow.Hidden;
+            Add(header);
 
             var scrollView = new ScrollView();
-            scrollView.style.flexGrow = 1;
+            scrollView.style.flexGrow      = 1;
             scrollView.style.paddingBottom = 0;
-            scrollView.style.marginBottom = 0;
+            scrollView.style.marginBottom  = 0;
 
             _contentContainer = new VisualElement();
             _contentContainer.style.flexDirection = FlexDirection.Column;
             _contentContainer.style.paddingBottom = 0;
-            _contentContainer.style.marginBottom = 0;
-            _contentContainer.style.paddingLeft = 5;
-            _contentContainer.style.paddingRight = 5;
-            _contentContainer.style.width = Length.Percent(100);
+            _contentContainer.style.marginBottom  = 0;
+            _contentContainer.style.paddingLeft   = 5;
+            _contentContainer.style.paddingRight  = 5;
+            _contentContainer.style.width         = Length.Percent(100);
 
             scrollView.Add(_contentContainer);
             Add(scrollView);
         }
 
+        // ─── Главный экран (список категорий) ─────────────────────────────────
+
         private void ShowCategories()
         {
+            _showingMethodsCategory = false;
             _contentContainer.Clear();
-            foreach (var category in _categories)
+
+            // Категория «Методы» первой, выделена цветом
+            _contentContainer.Add(CreateMethodsCategoryButton());
+
+            // Разделитель
+            var sep = new VisualElement();
+            sep.style.height          = 1;
+            sep.style.backgroundColor = new Color(0.3f, 0.3f, 0.3f);
+            sep.style.marginTop       = 4;
+            sep.style.marginBottom    = 4;
+            _contentContainer.Add(sep);
+
+            // Остальные категории
+            foreach (var cat in _categories)
+                _contentContainer.Add(CreateCategoryButton(cat.Key));
+        }
+
+        private VisualElement CreateMethodsCategoryButton()
+        {
+            int count = MethodRegistry.Methods.Count;
+            var btn = new Button(() => ShowMethodsCategory());
+            btn.text = count > 0 ? $"Методы  ({count})" : "Методы";
+            StyleCategoryButton(btn, MethodColor);
+            return btn;
+        }
+
+        // ─── Экран методов ────────────────────────────────────────────────────
+
+        private void ShowMethodsCategory()
+        {
+            _showingMethodsCategory = true;
+            _contentContainer.Clear();
+
+            // ← Назад
+            var backBtn = new Button(() => ShowCategories()) { text = "← Back" };
+            StyleBackButton(backBtn);
+            _contentContainer.Add(backBtn);
+
+            // Заголовок
+            var titleLbl = new Label("Методы");
+            titleLbl.style.fontSize               = 13;
+            titleLbl.style.unityFontStyleAndWeight = FontStyle.Bold;
+            titleLbl.style.color                   = MethodColor;
+            titleLbl.style.paddingBottom           = 6;
+            titleLbl.style.marginBottom            = 6;
+            titleLbl.style.borderBottomWidth       = 1;
+            titleLbl.style.borderBottomColor       = new Color(0.3f, 0.3f, 0.3f);
+            titleLbl.style.unityTextAlign          = TextAnchor.MiddleCenter;
+            _contentContainer.Add(titleLbl);
+
+            // Кнопка создания
+            var createBtn = new Button(OnCreateMethodClicked) { text = "+ Создать метод" };
+            createBtn.style.fontSize     = 12;
+            createBtn.style.paddingTop   = 8;
+            createBtn.style.paddingBottom = 8;
+            createBtn.style.backgroundColor = new Color(0.22f, 0.22f, 0.22f);
+            createBtn.style.marginBottom = 8;
+            createBtn.style.alignSelf    = Align.Stretch;
+            createBtn.style.flexGrow     = 1;
+            createBtn.style.width        = Length.Percent(100);
+            ApplyBorder(createBtn, MethodColor);
+            createBtn.RegisterCallback<MouseEnterEvent>(_ =>
+                createBtn.style.backgroundColor = new Color(0.32f, 0.32f, 0.32f));
+            createBtn.RegisterCallback<MouseLeaveEvent>(_ =>
+                createBtn.style.backgroundColor = new Color(0.22f, 0.22f, 0.22f));
+            _contentContainer.Add(createBtn);
+
+            // Список методов
+            var methods = MethodRegistry.Methods;
+            if (methods.Count == 0)
             {
-                var button = CreateCategoryButton(category.Key);
-                _contentContainer.Add(button);
+                var empty = new Label("  (нет методов)");
+                empty.style.color    = new Color(0.5f, 0.5f, 0.5f);
+                empty.style.fontSize = 11;
+                _contentContainer.Add(empty);
+                return;
+            }
+
+            foreach (var def in methods)
+                _contentContainer.Add(BuildMethodRow(def));
+        }
+
+        private VisualElement BuildMethodRow(MethodDefinition def)
+        {
+            var row = new VisualElement();
+            row.style.flexDirection = FlexDirection.Row;
+            row.style.alignItems    = Align.Center;
+            row.style.marginTop     = 2;
+            row.style.marginBottom  = 2;
+
+            // Кнопка «создать call-ноду»
+            var callBtn = new Button(() => CreateMethodCallNode(def.Id));
+            callBtn.text                  = def.Name;
+            callBtn.tooltip               = def.Signature();
+            callBtn.style.flexGrow        = 1;
+            callBtn.style.fontSize        = 12;
+            callBtn.style.paddingTop      = 6;
+            callBtn.style.paddingBottom   = 6;
+            callBtn.style.paddingLeft     = 8;
+            callBtn.style.backgroundColor = new Color(0.25f, 0.25f, 0.25f);
+            callBtn.style.unityTextAlign  = TextAnchor.MiddleLeft;
+            callBtn.style.textOverflow    = TextOverflow.Ellipsis;
+            callBtn.style.overflow        = Overflow.Hidden;
+            callBtn.style.whiteSpace      = WhiteSpace.NoWrap;
+            ApplyBorder(callBtn, MethodColor);
+            row.Add(callBtn);
+
+            // Кнопка «✎ редактировать»
+            var editBtn = new Button(() => OnEditMethodClicked(def.Id)) { text = "✎" };
+            editBtn.tooltip               = "Редактировать";
+            editBtn.style.width           = 26;
+            editBtn.style.fontSize        = 12;
+            editBtn.style.paddingLeft     = 0;
+            editBtn.style.paddingRight    = 0;
+            editBtn.style.marginLeft      = 2;
+            editBtn.style.backgroundColor = new Color(0.25f, 0.25f, 0.25f);
+            ApplyBorder(editBtn, new Color(0.6f, 0.6f, 0.6f));
+            row.Add(editBtn);
+
+            // Кнопка «✕ удалить»
+            var delBtn = new Button(() => OnDeleteMethodClicked(def.Id)) { text = "✕" };
+            delBtn.tooltip               = "Удалить";
+            delBtn.style.width           = 26;
+            delBtn.style.fontSize        = 12;
+            delBtn.style.paddingLeft     = 0;
+            delBtn.style.paddingRight    = 0;
+            delBtn.style.marginLeft      = 2;
+            delBtn.style.backgroundColor = new Color(0.3f, 0.15f, 0.15f);
+            ApplyBorder(delBtn, new Color(0.8f, 0.3f, 0.3f));
+            row.Add(delBtn);
+
+            return row;
+        }
+
+        // ─── Обработчики методов ──────────────────────────────────────────────
+
+        private void OnMethodsChanged()
+        {
+            if (_showingMethodsCategory)
+                ShowMethodsCategory();
+            else
+                ShowCategories(); // обновляем счётчик на кнопке «Методы (N)»
+        }
+
+        private void OnCreateMethodClicked()
+        {
+            CreateMethodPopup.ShowCreate(def =>
+            {
+                MethodRegistry.Add(def);
+                VisualScriptingWindow.ActiveWindow?.OpenMethodTab(def.Id);
+            }, GetUniqueMethodName());
+        }
+
+        private void OnEditMethodClicked(string id)
+        {
+            var def = MethodRegistry.GetById(id);
+            if (def == null) return;
+
+            // Принудительно синхронизируем рантайм → def.Parameters,
+            // чтобы попап отображал актуальный список параметров из графа
+            VisualScriptingWindow.ActiveWindow?.ForceSyncMethodRuntime(id);
+
+            CreateMethodPopup.ShowEdit(def, updated =>
+            {
+                MethodRegistry.Update(updated);
+                VisualScriptingWindow.ActiveWindow?.RefreshMethodTabTitle(updated.Id, updated.Name);
+                // Синхронизируем граф параметров из обновлённого def.Parameters
+                VisualScriptingWindow.ActiveWindow?.SyncParamGraphFromDefinition(updated.Id);
+            });
+        }
+
+        private void OnDeleteMethodClicked(string id)
+        {
+            var def = MethodRegistry.GetById(id);
+            if (def == null) return;
+            bool ok = EditorUtility.DisplayDialog(
+                "Удалить метод",
+                $"Удалить метод «{def.Name}»?\nВсе ноды вызова этого метода станут недействительными.",
+                "Удалить", "Отмена");
+            if (!ok) return;
+            VisualScriptingWindow.ActiveWindow?.CloseMethodTab(id);
+            MethodRegistry.Remove(id);
+        }
+
+        // ─── Уникальное имя метода ────────────────────────────────────────────
+
+        private static string GetUniqueMethodName()
+        {
+            var existing = new HashSet<string>(
+                MethodRegistry.Methods.Select(m => m.Name),
+                StringComparer.OrdinalIgnoreCase);
+            if (!existing.Contains("MyMethod")) return "MyMethod";
+            int n = 1;
+            while (existing.Contains($"MyMethod{n}")) n++;
+            return $"MyMethod{n}";
+        }
+
+        // ─── Создание call-ноды метода ────────────────────────────────────────
+
+        private void CreateMethodCallNode(string methodId)
+        {
+            if (_graphView == null || _graphView.graph == null)
+            {
+                UnityEngine.Debug.LogError("[NodeToolbarView] Graph is not initialized.");
+                return;
+            }
+
+            var def = MethodRegistry.GetById(methodId);
+            if (def == null) return;
+
+            Rect    graphRect    = _graphView.layout;
+            Vector2 screenCenter = new Vector2(graphRect.width / 2f, graphRect.height / 2f);
+#pragma warning disable 0618
+            Vector2 pan   = (Vector2)_graphView.viewTransform.position;
+            float   scale = _graphView.scale;
+#pragma warning restore 0618
+            Vector2 graphCenter = (screenCenter - pan) / scale;
+            Vector2 finalPos    = FindFreePosition(graphCenter, 220, 100, 25f);
+
+            var node = new MethodCallNode
+            {
+                MethodId         = def.Id,
+                MethodName       = def.Name,
+                ReturnType       = def.ReturnType,
+                ActiveParamCount = Mathf.Min(def.Parameters.Count, MethodCallNode.MaxParams),
+                ParamNames       = new string[MethodCallNode.MaxParams],
+                ParamTypes       = new string[MethodCallNode.MaxParams]
+            };
+            for (int i = 0; i < MethodCallNode.MaxParams; i++)
+            {
+                if (i < def.Parameters.Count)
+                {
+                    node.ParamNames[i] = def.Parameters[i].Name;
+                    node.ParamTypes[i] = def.Parameters[i].Type;
+                }
+            }
+
+            if (string.IsNullOrEmpty(node.GUID)) node.GUID = Guid.NewGuid().ToString();
+            node.NodeId    = node.GUID;
+            node.position  = new Rect(finalPos.x, finalPos.y, 220, 100);
+
+            try { _graphView.AddNode(node); }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogError($"[NodeToolbarView] Failed to add method node: {e.Message}");
             }
         }
 
+        // ─── Стандартные категории ────────────────────────────────────────────
+
         private VisualElement CreateCategoryButton(string category)
         {
-            var button = new Button();
-            button.text = category;
-            button.style.fontSize = 13;
-            button.style.paddingTop = 8;
-            button.style.paddingBottom = 8;
-            button.style.paddingLeft = 12;
-            button.style.paddingRight = 12;
-            button.style.backgroundColor = new Color(0.25f, 0.25f, 0.25f);
-            button.style.borderTopWidth = 2;
-            button.style.borderBottomWidth = 2;
-            button.style.borderLeftWidth = 2;
-            button.style.borderRightWidth = 2;
-            button.style.marginLeft = 0;
-            button.style.marginRight = 0;
-            button.style.marginTop = 4;
-            button.style.marginBottom = 4;
-            button.style.whiteSpace = WhiteSpace.NoWrap;
-            button.style.textOverflow = TextOverflow.Ellipsis;
-            button.style.overflow = Overflow.Hidden;
-            button.style.alignSelf = Align.Stretch;
-            button.style.flexGrow = 1;
-            button.style.width = Length.Percent(100);
-
-            if (CategoryColors.TryGetValue(category, out var color))
-            {
-                button.style.borderTopColor = color;
-                button.style.borderBottomColor = color;
-                button.style.borderLeftColor = color;
-                button.style.borderRightColor = color;
-            }
-
-            button.RegisterCallback<MouseEnterEvent>(_ => button.style.backgroundColor = new Color(0.35f, 0.35f, 0.35f));
-            button.RegisterCallback<MouseLeaveEvent>(_ => button.style.backgroundColor = new Color(0.25f, 0.25f, 0.25f));
-            button.clicked += () => ShowNodesForCategory(category);
-            return button;
+            var btn = new Button(() => ShowNodesForCategory(category));
+            btn.text = category;
+            StyleCategoryButton(btn, CategoryColors.TryGetValue(category, out var c) ? c : Color.gray);
+            return btn;
         }
 
         private void ShowNodesForCategory(string category)
         {
             _contentContainer.Clear();
 
-            var backButton = new Button(ShowCategories);
-            backButton.text = "← Back";
-            backButton.style.fontSize = 12;
-            backButton.style.paddingTop = 6;
-            backButton.style.paddingBottom = 6;
-            backButton.style.backgroundColor = new Color(0.22f, 0.22f, 0.22f);
-            backButton.style.marginBottom = 8;
-            backButton.style.alignSelf = Align.Stretch;
-            backButton.style.flexGrow = 1;
-            backButton.style.width = Length.Percent(100);
-            backButton.style.whiteSpace = WhiteSpace.NoWrap;
-            backButton.style.textOverflow = TextOverflow.Ellipsis;
-            backButton.RegisterCallback<MouseEnterEvent>(_ => backButton.style.backgroundColor = new Color(0.32f, 0.32f, 0.32f));
-            backButton.RegisterCallback<MouseLeaveEvent>(_ => backButton.style.backgroundColor = new Color(0.22f, 0.22f, 0.22f));
-            _contentContainer.Add(backButton);
+            var backBtn = new Button(ShowCategories) { text = "← Back" };
+            StyleBackButton(backBtn);
+            _contentContainer.Add(backBtn);
 
-            var title = new Label(category);
-            title.style.fontSize = 13;
-            title.style.unityFontStyleAndWeight = FontStyle.Bold;
-            title.style.color = Color.white;
-            title.style.paddingBottom = 8;
-            title.style.marginBottom = 8;
-            title.style.borderBottomWidth = 1;
-            title.style.borderBottomColor = new Color(0.3f, 0.3f, 0.3f);
-            title.style.unityTextAlign = TextAnchor.MiddleCenter;
-            title.style.whiteSpace = WhiteSpace.NoWrap;
-            title.style.textOverflow = TextOverflow.Ellipsis;
-            title.style.overflow = Overflow.Hidden;
-            _contentContainer.Add(title);
+            var titleLbl = new Label(category);
+            titleLbl.style.fontSize               = 13;
+            titleLbl.style.unityFontStyleAndWeight = FontStyle.Bold;
+            titleLbl.style.color                   = Color.white;
+            titleLbl.style.paddingBottom           = 8;
+            titleLbl.style.marginBottom            = 8;
+            titleLbl.style.borderBottomWidth       = 1;
+            titleLbl.style.borderBottomColor       = new Color(0.3f, 0.3f, 0.3f);
+            titleLbl.style.unityTextAlign          = TextAnchor.MiddleCenter;
+            titleLbl.style.whiteSpace              = WhiteSpace.NoWrap;
+            titleLbl.style.textOverflow            = TextOverflow.Ellipsis;
+            titleLbl.style.overflow                = Overflow.Hidden;
+            _contentContainer.Add(titleLbl);
 
             if (_categories.TryGetValue(category, out var nodes))
             {
-                Color catColor = CategoryColors.ContainsKey(category) ? CategoryColors[category] : Color.gray;
+                Color catColor = CategoryColors.TryGetValue(category, out var cc) ? cc : Color.gray;
                 foreach (var node in nodes.OrderBy(n => n.path))
-                {
-                    var nodeButton = CreateNodeButton(node.type, node.path, catColor);
-                    _contentContainer.Add(nodeButton);
-                }
+                    _contentContainer.Add(CreateNodeButton(node.type, node.path, catColor));
             }
         }
 
         private VisualElement CreateNodeButton(Type nodeType, string displayName, Color categoryColor)
         {
-            var button = new Button();
             var shortName = displayName.Split('/').Last();
-            button.text = shortName;
-            button.tooltip = displayName;
-            button.style.fontSize = 12;
-            button.style.paddingTop = 8;
-            button.style.paddingBottom = 8;
-            button.style.paddingLeft = 12;
-            button.style.paddingRight = 12;
-            button.style.backgroundColor = new Color(0.28f, 0.28f, 0.28f);
-            button.style.alignSelf = Align.Stretch;
-            button.style.marginLeft = 0;
-            button.style.marginRight = 0;
-            button.style.marginTop = 2;
-            button.style.marginBottom = 2;
-            button.style.unityTextAlign = TextAnchor.MiddleCenter;
-            button.style.flexGrow = 1;
-            button.style.width = Length.Percent(100);
-            button.style.borderTopWidth = 2;
-            button.style.borderBottomWidth = 2;
-            button.style.borderLeftWidth = 2;
-            button.style.borderRightWidth = 2;
-            button.style.borderTopColor = categoryColor;
-            button.style.borderBottomColor = categoryColor;
-            button.style.borderLeftColor = categoryColor;
-            button.style.borderRightColor = categoryColor;
-            button.style.whiteSpace = WhiteSpace.NoWrap;
-            button.style.textOverflow = TextOverflow.Ellipsis;
-            button.style.overflow = Overflow.Hidden;
-
-            button.RegisterCallback<MouseEnterEvent>(_ => button.style.backgroundColor = new Color(0.38f, 0.38f, 0.38f));
-            button.RegisterCallback<MouseLeaveEvent>(_ => button.style.backgroundColor = new Color(0.28f, 0.28f, 0.28f));
-
-            button.clicked += () => CreateNodeAtCenter(nodeType);
-            return button;
+            var btn = new Button(() => CreateNodeAtCenter(nodeType));
+            btn.text            = shortName;
+            btn.tooltip         = displayName;
+            btn.style.fontSize  = 12;
+            btn.style.paddingTop    = 8;
+            btn.style.paddingBottom = 8;
+            btn.style.paddingLeft   = 12;
+            btn.style.paddingRight  = 12;
+            btn.style.backgroundColor = new Color(0.28f, 0.28f, 0.28f);
+            btn.style.alignSelf   = Align.Stretch;
+            btn.style.marginLeft  = 0;
+            btn.style.marginRight = 0;
+            btn.style.marginTop   = 2;
+            btn.style.marginBottom = 2;
+            btn.style.unityTextAlign = TextAnchor.MiddleCenter;
+            btn.style.flexGrow    = 1;
+            btn.style.width       = Length.Percent(100);
+            btn.style.whiteSpace  = WhiteSpace.NoWrap;
+            btn.style.textOverflow = TextOverflow.Ellipsis;
+            btn.style.overflow    = Overflow.Hidden;
+            ApplyBorder(btn, categoryColor);
+            btn.RegisterCallback<MouseEnterEvent>(_ =>
+                btn.style.backgroundColor = new Color(0.38f, 0.38f, 0.38f));
+            btn.RegisterCallback<MouseLeaveEvent>(_ =>
+                btn.style.backgroundColor = new Color(0.28f, 0.28f, 0.28f));
+            return btn;
         }
+
+        // ─── Вспомогательные ──────────────────────────────────────────────────
 
         private void CreateNodeAtCenter(Type nodeType)
         {
@@ -225,94 +431,136 @@ namespace CustomVisualScripting.Editor.Nodes.Views
                 return;
             }
 
-            Rect graphRect = _graphView.layout;
+            Rect    graphRect    = _graphView.layout;
             Vector2 screenCenter = new Vector2(graphRect.width / 2f, graphRect.height / 2f);
 #pragma warning disable 0618
-            Vector2 pan = (Vector2)_graphView.viewTransform.position;
-            float scale = _graphView.scale;
+            Vector2 pan   = (Vector2)_graphView.viewTransform.position;
+            float   scale = _graphView.scale;
 #pragma warning restore 0618
             Vector2 graphCenter = (screenCenter - pan) / scale;
-
-            const float gap = 25f;
-            Vector2 finalPos = FindFreePosition(graphCenter, 200, 100, gap);
+            Vector2 finalPos    = FindFreePosition(graphCenter, 200, 100, 25f);
 
             var node = (BaseNode)Activator.CreateInstance(nodeType);
             if (node == null) return;
-            if (string.IsNullOrEmpty(node.GUID))
-                node.GUID = Guid.NewGuid().ToString();
-
+            if (string.IsNullOrEmpty(node.GUID)) node.GUID = Guid.NewGuid().ToString();
             node.position = new Rect(finalPos.x, finalPos.y, 200, 100);
 
-            try
-            {
-                _graphView.AddNode(node);
-            }
+            try { _graphView.AddNode(node); }
             catch (Exception e)
             {
                 UnityEngine.Debug.LogError($"[NodeToolbarView] Failed to add node: {e.Message}");
                 return;
             }
-
             ShowCategories();
         }
 
         private Vector2 FindFreePosition(Vector2 desiredCenter, float nodeWidth, float nodeHeight, float gap)
         {
             if (_graphView == null || _graphView.graph == null) return desiredCenter;
+            var existing = _graphView.graph.nodes.Where(n => n != null).Select(n => n.position).ToList();
 
-            var existingNodes = _graphView.graph.nodes
-                .Where(n => n != null)
-                .Select(n => n.position)
-                .ToList();
-
-            bool OverlapsWithGap(Rect rect, Rect other)
+            bool Overlaps(Rect r, Rect other)
             {
-                Rect expanded = new Rect(rect.x - gap, rect.y - gap, rect.width + gap * 2, rect.height + gap * 2);
-                return expanded.Overlaps(other);
+                var exp = new Rect(r.x - gap, r.y - gap, r.width + gap * 2, r.height + gap * 2);
+                return exp.Overlaps(other);
             }
 
-            Rect proposedRect = new Rect(desiredCenter.x - nodeWidth/2, desiredCenter.y - nodeHeight/2, nodeWidth, nodeHeight);
-            if (!existingNodes.Any(r => OverlapsWithGap(proposedRect, r)))
-                return desiredCenter;
+            var proposed = new Rect(desiredCenter.x - nodeWidth / 2, desiredCenter.y - nodeHeight / 2, nodeWidth, nodeHeight);
+            if (!existing.Any(r => Overlaps(proposed, r))) return desiredCenter;
 
-            float radiusStep = 30f;
-            int maxAttempts = 80;
-            for (int attempt = 1; attempt <= maxAttempts; attempt++)
+            for (int attempt = 1; attempt <= 80; attempt++)
             {
-                float radius = radiusStep * attempt;
+                float radius = 30f * attempt;
                 for (float angle = 0; angle < 360f; angle += 25f)
                 {
-                    float rad = angle * Mathf.Deg2Rad;
-                    Vector2 offset = new Vector2(Mathf.Cos(rad), Mathf.Sin(rad)) * radius;
-                    Vector2 candidate = desiredCenter + offset;
-                    Rect candidateRect = new Rect(candidate.x - nodeWidth/2, candidate.y - nodeHeight/2, nodeWidth, nodeHeight);
-                    if (!existingNodes.Any(rect => OverlapsWithGap(candidateRect, rect)))
-                        return candidate;
+                    float rad       = angle * Mathf.Deg2Rad;
+                    Vector2 offset  = new Vector2(Mathf.Cos(rad), Mathf.Sin(rad)) * radius;
+                    Vector2 cand    = desiredCenter + offset;
+                    var     candRect = new Rect(cand.x - nodeWidth / 2, cand.y - nodeHeight / 2, nodeWidth, nodeHeight);
+                    if (!existing.Any(r => Overlaps(candRect, r))) return cand;
                 }
             }
-            return desiredCenter + new Vector2(UnityEngine.Random.Range(-80f, 80f), UnityEngine.Random.Range(-80f, 80f));
+            return desiredCenter + new Vector2(
+                UnityEngine.Random.Range(-80f, 80f),
+                UnityEngine.Random.Range(-80f, 80f));
         }
 
         private Dictionary<string, List<(string path, Type type)>> GetCategories()
         {
-            var categories = new Dictionary<string, List<(string, Type)>>();
-            var menuEntries = NodeProvider.GetNodeMenuEntries(null);
-            foreach (var entry in menuEntries)
+            var cats = new Dictionary<string, List<(string, Type)>>();
+            foreach (var entry in NodeProvider.GetNodeMenuEntries(null))
             {
                 if (ShouldHideMenuPath(entry.path)) continue;
-                var category = entry.path.Split('/')[0];
-                if (!categories.ContainsKey(category))
-                    categories[category] = new List<(string, Type)>();
-                categories[category].Add((entry.path, entry.type));
+                var cat = entry.path.Split('/')[0];
+                if (!cats.ContainsKey(cat)) cats[cat] = new List<(string, Type)>();
+                cats[cat].Add((entry.path, entry.type));
             }
-            return categories;
+            return cats;
         }
 
         private static bool ShouldHideMenuPath(string path)
         {
             if (string.IsNullOrEmpty(path)) return false;
-            return path.StartsWith("Utils/") || path.StartsWith("Utils") ||
-                   path.StartsWith("Unity/") || path.StartsWith("Unity");
+            return path.StartsWith("Utils/")  || path.StartsWith("Utils") ||
+                   path.StartsWith("Unity/")  || path.StartsWith("Unity") ||
+                   path.StartsWith("Method/") || path.StartsWith("Method");
+        }
+
+        // ─── Стилизация ──────────────────────────────────────────────────────
+
+        private static void StyleCategoryButton(Button btn, Color borderColor)
+        {
+            btn.style.fontSize      = 13;
+            btn.style.paddingTop    = 8;
+            btn.style.paddingBottom = 8;
+            btn.style.paddingLeft   = 12;
+            btn.style.paddingRight  = 12;
+            btn.style.backgroundColor = new Color(0.25f, 0.25f, 0.25f);
+            btn.style.marginLeft    = 0;
+            btn.style.marginRight   = 0;
+            btn.style.marginTop     = 4;
+            btn.style.marginBottom  = 4;
+            btn.style.whiteSpace    = WhiteSpace.NoWrap;
+            btn.style.textOverflow  = TextOverflow.Ellipsis;
+            btn.style.overflow      = Overflow.Hidden;
+            btn.style.alignSelf     = Align.Stretch;
+            btn.style.flexGrow      = 1;
+            btn.style.width         = Length.Percent(100);
+            ApplyBorder(btn, borderColor);
+            btn.RegisterCallback<MouseEnterEvent>(_ =>
+                btn.style.backgroundColor = new Color(0.35f, 0.35f, 0.35f));
+            btn.RegisterCallback<MouseLeaveEvent>(_ =>
+                btn.style.backgroundColor = new Color(0.25f, 0.25f, 0.25f));
+        }
+
+        private static void StyleBackButton(Button btn)
+        {
+            btn.style.fontSize        = 12;
+            btn.style.paddingTop      = 6;
+            btn.style.paddingBottom   = 6;
+            btn.style.backgroundColor = new Color(0.22f, 0.22f, 0.22f);
+            btn.style.marginBottom    = 8;
+            btn.style.alignSelf       = Align.Stretch;
+            btn.style.flexGrow        = 1;
+            btn.style.width           = Length.Percent(100);
+            btn.style.whiteSpace      = WhiteSpace.NoWrap;
+            btn.style.textOverflow    = TextOverflow.Ellipsis;
+            btn.RegisterCallback<MouseEnterEvent>(_ =>
+                btn.style.backgroundColor = new Color(0.32f, 0.32f, 0.32f));
+            btn.RegisterCallback<MouseLeaveEvent>(_ =>
+                btn.style.backgroundColor = new Color(0.22f, 0.22f, 0.22f));
+        }
+
+        private static void ApplyBorder(VisualElement el, Color color)
+        {
+            el.style.borderTopWidth    = 2;
+            el.style.borderBottomWidth = 2;
+            el.style.borderLeftWidth   = 2;
+            el.style.borderRightWidth  = 2;
+            el.style.borderTopColor    = color;
+            el.style.borderBottomColor = color;
+            el.style.borderLeftColor   = color;
+            el.style.borderRightColor  = color;
         }
 
         private static Color HexColor(string hex)

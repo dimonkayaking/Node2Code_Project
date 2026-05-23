@@ -1,3 +1,4 @@
+using CustomVisualScripting.Editor.Methods;
 using CustomVisualScripting.Editor.Nodes.Base;
 using CustomVisualScripting.Editor.Nodes.Comparison;
 using CustomVisualScripting.Editor.Nodes.Conversion;
@@ -6,6 +7,7 @@ using CustomVisualScripting.Editor.Nodes.Flow;
 using CustomVisualScripting.Editor.Nodes.Literals;
 using CustomVisualScripting.Editor.Nodes.Logic;
 using CustomVisualScripting.Editor.Nodes.Math;
+using CustomVisualScripting.Editor.Nodes.Methods;
 using CustomVisualScripting.Editor.Nodes.Unity;
 using VisualScripting.Core.Models;
 
@@ -72,6 +74,14 @@ namespace CustomVisualScripting.Editor
                 case NodeType.UnityVector3: return new Vector3CreateNode();
                 case NodeType.UnityGetPosition: return new GetPositionNode();
                 case NodeType.UnitySetPosition: return new SetPositionNode();
+                case NodeType.MethodCall:
+                {
+                    var callNode = new MethodCallNode();
+                    // Мета-данные заполняются позже через InitializeFromData
+                    return callNode;
+                }
+                case NodeType.MethodParam:  return new MethodParamNode();
+                case NodeType.ReturnValue:  return new ReturnNode();
                 default: return null;
             }
         }

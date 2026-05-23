@@ -29,6 +29,7 @@ namespace CustomVisualScripting.Editor.Windows
         private void CleanupGraph()
         {
             DisposeAllSubspaceRuntimes();
+            DisposeAllMethodRuntimes();
             if (_graphView != null)
             {
                 _graphView.graphViewChanged -= OnGraphViewChanged;

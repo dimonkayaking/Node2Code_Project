@@ -726,6 +726,11 @@ namespace CustomVisualScripting.Editor.Nodes.Views
                 case NodeType.UnityVector3:
                     return Hex("#8D6E63");
 
+                // Методы
+                case NodeType.MethodCall:
+                case NodeType.MethodParam:
+                    return Hex("#00BCD4");
+
                 default:
                     return Hex("#9E9E9E");
             }

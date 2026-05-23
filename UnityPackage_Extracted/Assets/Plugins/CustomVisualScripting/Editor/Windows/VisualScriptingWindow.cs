@@ -16,6 +16,7 @@ using CustomVisualScripting.Runtime.Execution;
 using VisualScripting.Core.Models;
 using CustomToolbar = CustomVisualScripting.Windows.Views.ToolbarView;
 using CustomVisualScripting.Editor;
+using CustomVisualScripting.Editor.Methods;
 
 namespace CustomVisualScripting.Editor.Windows
 {
@@ -152,18 +153,21 @@ namespace CustomVisualScripting.Editor.Windows
         private void OnParse()
         {
             _toolbar.SetStatusWarning("Парсинг...");
-            
-            var result = ParserBridge.Parse(_codeEditor.Code);
-            
+
+            var result = ParserBridge.ParseWithMethods(_codeEditor.Code, ToMethodInfos(MethodRegistry.Methods));
+
             if (result.HasErrors)
             {
                 _errorPanel.ShowErrors(result.Errors);
                 _toolbar.SetStatusError($"Ошибок: {result.Errors.Count}");
                 return;
             }
-            
+
+            // Импортируем методы, найденные при парсинге (inline-локальные функции)
+            ImportDiscoveredMethods(result.DiscoveredMethods);
+
             _errorPanel.Clear();
-            
+
             _currentGraph = new CompleteGraphData();
             _currentGraph = GraphConverter.LogicToComplete(result.Graph, _currentGraph);
             _hasUnsavedChanges = true;
@@ -179,13 +183,14 @@ namespace CustomVisualScripting.Editor.Windows
         private void OnGenerate()
         {
             _toolbar.SetStatusWarning("Генерация...");
-            
+
             SyncFullGraphFromView();
-            
-            string code = GeneratorBridge.Generate(_currentGraph.LogicGraph);
+            SyncAllMethodRuntimes();
+
+            string code = GeneratorBridge.GenerateWithMethods(_currentGraph.LogicGraph, ToMethodInfos(MethodRegistry.Methods));
             _codeEditor.Code = code;
             UpdateCodeEditorSyntaxColors();
-            
+
             _toolbar.SetStatusSuccess("Код сгенерирован");
         }
         
@@ -212,7 +217,8 @@ namespace CustomVisualScripting.Editor.Windows
             _toolbar.SetRunMode(true);
             _toolbar.SetStatusWarning("Выполнение...");
             SyncFullGraphFromView();
-            var code = GeneratorBridge.Generate(_currentGraph.LogicGraph);
+            SyncAllMethodRuntimes();
+            var code = GeneratorBridge.GenerateWithMethods(_currentGraph.LogicGraph, ToMethodInfos(MethodRegistry.Methods));
             _codeEditor.Code = code;
             
             try
@@ -253,9 +259,11 @@ namespace CustomVisualScripting.Editor.Windows
             }
 
             SyncFullGraphFromView();
-            string code = GeneratorBridge.Generate(_currentGraph.LogicGraph);
+            SyncAllMethodRuntimes();
+            string code = GeneratorBridge.GenerateWithMethods(_currentGraph.LogicGraph, ToMethodInfos(MethodRegistry.Methods));
             _codeEditor.Code = code;
             SaveCodeToPath(_currentFilePath, code);
+            SaveMethodsToPath(GetMethodsFilePath(_currentFilePath));
         }
         
         private void OnSaveAs()
@@ -263,16 +271,18 @@ namespace CustomVisualScripting.Editor.Windows
             string defaultName = HasCurrentFilePath()
                 ? Path.GetFileName(_currentFilePath)
                 : "Script.cs";
-            
+
             string path = EditorUtility.SaveFilePanel("Сохранить код как", Application.dataPath, defaultName, "cs");
             if (string.IsNullOrEmpty(path)) return;
-            
+
             SyncFullGraphFromView();
-            string code = GeneratorBridge.Generate(_currentGraph.LogicGraph);
+            SyncAllMethodRuntimes();
+            string code = GeneratorBridge.GenerateWithMethods(_currentGraph.LogicGraph, ToMethodInfos(MethodRegistry.Methods));
             _codeEditor.Code = code;
             _currentFilePath = path;
             RefreshFileTabTitle();
             SaveCodeToPath(path, code);
+            SaveMethodsToPath(GetMethodsFilePath(path));
         }
 
         private bool HasCurrentFilePath() => !string.IsNullOrWhiteSpace(_currentFilePath);
@@ -304,13 +314,19 @@ namespace CustomVisualScripting.Editor.Windows
                 ResetTabsToFileOnly();
                 RefreshFileTabTitle();
 
-                var result = ParserBridge.Parse(code);
+                // Загружаем методы сначала, чтобы парсер мог распознать их вызовы
+                LoadMethodsFromPath(GetMethodsFilePath(path));
+
+                var result = ParserBridge.ParseWithMethods(code, ToMethodInfos(MethodRegistry.Methods));
                 if (result.HasErrors)
                 {
                     _errorPanel.ShowErrors(result.Errors);
                     _toolbar.SetStatusError($"Ошибок: {result.Errors.Count}");
                     return;
                 }
+
+                // Импортируем методы, найденные при парсинге (inline-локальные функции)
+                ImportDiscoveredMethods(result.DiscoveredMethods);
 
                 _errorPanel.Clear();
                 _currentGraph = new CompleteGraphData();
@@ -334,6 +350,7 @@ namespace CustomVisualScripting.Editor.Windows
             _currentFilePath = null;
             _hasUnsavedChanges = false;
             _collapseFlowSubspacesOnNextRebuild = false;
+            MethodRegistry.Clear();
             ResetTabsToFileOnly();
             RecreateGraphView();
             _toolbar.SetStatusNormal("Очищено");
@@ -373,6 +390,29 @@ namespace CustomVisualScripting.Editor.Windows
         
         private CustomBaseNode CreateNodeFromData(NodeData data) =>
             EditorNodeFactory.Create(data);
+
+        // ─── Конвертация MethodDefinition → MethodInfo ────────────────────────
+        /// <summary>
+        /// Преобразует Editor-модели методов в Core-DTO для передачи в ParserBridge / GeneratorBridge.
+        /// Вынесено сюда, чтобы Integration-сборка не зависела от Editor-сборки.
+        /// </summary>
+        private static IEnumerable<MethodInfo> ToMethodInfos(IEnumerable<MethodDefinition> defs)
+        {
+            if (defs == null) yield break;
+            foreach (var m in defs)
+            {
+                if (m == null || string.IsNullOrWhiteSpace(m.Id)) continue;
+                yield return new MethodInfo
+                {
+                    Id         = m.Id,
+                    Name       = m.Name,
+                    ReturnType = m.ReturnType ?? "void",
+                    ParamNames = m.Parameters?.ConvertAll(p => p.Name) ?? new System.Collections.Generic.List<string>(),
+                    ParamTypes = m.Parameters?.ConvertAll(p => p.Type) ?? new System.Collections.Generic.List<string>(),
+                    BodyGraph  = m.BodyGraph
+                };
+            }
+        }
 
     }
 }

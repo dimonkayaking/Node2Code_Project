@@ -51,6 +51,11 @@ namespace VisualScripting.Core.Models
         // Mathf
         MathfAbs,
         MathfMax,
-        MathfMin
+        MathfMin,
+
+        // Пользовательские методы
+        MethodCall,
+        MethodParam,
+        ReturnValue
     }
 }

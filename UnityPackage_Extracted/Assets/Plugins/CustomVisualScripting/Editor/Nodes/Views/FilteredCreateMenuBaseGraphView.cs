@@ -10,7 +10,7 @@ using UnityEngine.UIElements;
 
 namespace CustomVisualScripting.Editor.Nodes.Views
 {
-    public sealed class FilteredCreateMenuBaseGraphView : BaseGraphView
+    public class FilteredCreateMenuBaseGraphView : BaseGraphView
     {
         static readonly MethodInfo s_baseReloadView =
             typeof(BaseGraphView).GetMethod("ReloadView", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -167,7 +167,11 @@ namespace CustomVisualScripting.Editor.Nodes.Views
                 grouped[category].Add((entry.path, entry.type));
             }
 
-            Vector2 mouseGraphPos = evt.localMousePosition;
+            // evt.localMousePosition — координаты в пространстве элемента GraphView
+            // (не учитывает pan/zoom). Правильное преобразование:
+            // мировые (экранные) координаты → пространство contentViewContainer,
+            // который уже содержит трансформ сдвига и масштаба графа.
+            Vector2 mouseGraphPos = contentViewContainer.WorldToLocal(evt.mousePosition);
 
             foreach (var kv in grouped.OrderBy(g => g.Key))
             {
@@ -194,11 +198,12 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             AddNode(node);
         }
 
-        private static bool ShouldHideMenuPath(string path)
+        protected virtual bool ShouldHideMenuPath(string path)
         {
             if (string.IsNullOrEmpty(path)) return false;
-            return path.StartsWith("Utils/") || path.StartsWith("Utils") ||
-                   path.StartsWith("Unity/") || path.StartsWith("Unity");
+            return path.StartsWith("Utils/")   || path.StartsWith("Utils") ||
+                   path.StartsWith("Unity/")   || path.StartsWith("Unity") ||
+                   path.StartsWith("Method/")  || path.StartsWith("Method");
         }
     }
 }
