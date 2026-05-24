@@ -956,6 +956,132 @@ else
         Assert.Contains("int x = 2;", output);
     }
 
+    // ─── Тесты явного порядка через execOut → execIn ──────────────────────────
+
+    /// <summary>
+    /// Два независимых int-узла по умолчанию идут в порядке создания (A, B).
+    /// Подключаем B.execOut → A.execIn — теперь B должен идти первым.
+    /// </summary>
+    [Fact]
+    public void ExecChain_ReversesCreationOrder_WhenExecConnectionFlipped()
+    {
+        var nodeA = new NodeData { Id = "a", Type = NodeType.LiteralInt, Value = "1", ValueType = "int", VariableName = "a" };
+        var nodeB = new NodeData { Id = "b", Type = NodeType.LiteralInt, Value = "2", ValueType = "int", VariableName = "b" };
+
+        var graph = new GraphData();
+        // Порядок создания: A, B → без exec даст "int a ... int b"
+        graph.Nodes.Add(nodeA);
+        graph.Nodes.Add(nodeB);
+
+        // Явно говорим: сначала B, потом A
+        graph.Edges.Add(new EdgeData { FromNodeId = "b", FromPort = "execOut", ToNodeId = "a", ToPort = "execIn" });
+
+        var output = _generator.Generate(graph);
+
+        var posA = output.IndexOf("int a =", StringComparison.Ordinal);
+        var posB = output.IndexOf("int b =", StringComparison.Ordinal);
+
+        Assert.True(posB < posA, $"B должен быть до A через exec-связь.\nВывод:\n{output}");
+    }
+
+    /// <summary>
+    /// Три независимые ноды соединены цепочкой C → B → A через execOut/execIn.
+    /// Порядок в graph.Nodes: A, B, C — но генератор должен выдать C, B, A.
+    /// </summary>
+    [Fact]
+    public void ExecChain_ThreeNodes_FollowsExecOrder_IgnoresCreationOrder()
+    {
+        var nodeA = new NodeData { Id = "a", Type = NodeType.LiteralInt, Value = "1", ValueType = "int", VariableName = "a" };
+        var nodeB = new NodeData { Id = "b", Type = NodeType.LiteralInt, Value = "2", ValueType = "int", VariableName = "b" };
+        var nodeC = new NodeData { Id = "c", Type = NodeType.LiteralInt, Value = "3", ValueType = "int", VariableName = "c" };
+
+        var graph = new GraphData();
+        graph.Nodes.Add(nodeA); // список: A, B, C
+        graph.Nodes.Add(nodeB);
+        graph.Nodes.Add(nodeC);
+
+        // Цепочка: C → B → A
+        graph.Edges.Add(new EdgeData { FromNodeId = "c", FromPort = "execOut", ToNodeId = "b", ToPort = "execIn" });
+        graph.Edges.Add(new EdgeData { FromNodeId = "b", FromPort = "execOut", ToNodeId = "a", ToPort = "execIn" });
+
+        var output = _generator.Generate(graph);
+
+        var posA = output.IndexOf("int a =", StringComparison.Ordinal);
+        var posB = output.IndexOf("int b =", StringComparison.Ordinal);
+        var posC = output.IndexOf("int c =", StringComparison.Ordinal);
+
+        Assert.True(posC < posB && posB < posA,
+            $"Ожидался порядок C → B → A.\nВывод:\n{output}");
+    }
+
+    /// <summary>
+    /// Нода Console.WriteLine соединена с int-нодой через execOut → execIn.
+    /// Console должен идти после объявления переменной.
+    /// </summary>
+    [Fact]
+    public void ExecChain_ConsoleWriteLine_AfterLiteralViaExec()
+    {
+        var nodeX = new NodeData { Id = "x", Type = NodeType.LiteralInt, Value = "42", ValueType = "int", VariableName = "x" };
+        var nodePrint = new NodeData { Id = "print", Type = NodeType.ConsoleWriteLine, Value = "42", ValueType = "int" };
+
+        var graph = new GraphData();
+        // Порядок создания: print первый, x второй — без exec print шёл бы раньше
+        graph.Nodes.Add(nodePrint);
+        graph.Nodes.Add(nodeX);
+
+        // Явно: x → print
+        graph.Edges.Add(new EdgeData { FromNodeId = "x", FromPort = "execOut", ToNodeId = "print", ToPort = "execIn" });
+
+        var output = _generator.Generate(graph);
+
+        var posX = output.IndexOf("int x =", StringComparison.Ordinal);
+        var posPrint = output.IndexOf("Console.WriteLine", StringComparison.Ordinal);
+
+        Assert.True(posX < posPrint,
+            $"int x должен быть до Console.WriteLine через exec-связь.\nВывод:\n{output}");
+    }
+
+    /// <summary>
+    /// If-нода подключена через execOut к Console.WriteLine.
+    /// После if-блока должен идти Console.WriteLine.
+    /// </summary>
+    [Fact]
+    public void ExecChain_IfThenConsoleWriteLine_ViaExecOut()
+    {
+        // Condition subgraph: LiteralBool true
+        var condBool = new NodeData { Id = "cond", Type = NodeType.LiteralBool, Value = "true", ValueType = "bool" };
+        var condGraph = new GraphData();
+        condGraph.Nodes.Add(condBool);
+
+        var ifNode = new NodeData
+        {
+            Id = "if1",
+            Type = NodeType.FlowIf,
+            ConditionSubGraph = condGraph,
+            BodySubGraph = new GraphData()
+        };
+
+        var printNode = new NodeData { Id = "print", Type = NodeType.ConsoleWriteLine, Value = "done", ValueType = "string" };
+
+        var graph = new GraphData();
+        graph.Nodes.Add(ifNode);
+        graph.Nodes.Add(printNode);
+
+        // if.execOut → print.execIn
+        graph.Edges.Add(new EdgeData { FromNodeId = "if1", FromPort = "execOut", ToNodeId = "print", ToPort = "execIn" });
+
+        var output = _generator.Generate(graph);
+
+        var posIf = output.IndexOf("if (", StringComparison.Ordinal);
+        var posPrint = output.IndexOf("Console.WriteLine", StringComparison.Ordinal);
+
+        Assert.True(posIf >= 0, "Должен быть if-блок");
+        Assert.True(posPrint > posIf,
+            $"Console.WriteLine должен идти после if через execOut.\nВывод:\n{output}");
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+
     [Fact]
     public void ConditionSubGraph_VariableRefStub_CopiesInitializerValueFromOuterScope()
     {

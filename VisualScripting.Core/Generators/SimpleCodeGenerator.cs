@@ -148,10 +148,12 @@ namespace VisualScripting.Core.Generators
             {
                 var valueEdge = _graph.Edges.FirstOrDefault(e => e.ToNodeId == node.Id && e.ToPort == "inputValue");
                 string rhs;
-                if (!string.IsNullOrEmpty(node.ExpressionOverride))
-                    rhs = node.ExpressionOverride;
-                else if (valueEdge != null)
+                // Граф-обход имеет приоритет: даёт правильные скобки и Math.* имена.
+                // ExpressionOverride используется только как fallback (тернарник, Sqrt и т.п. без edge).
+                if (valueEdge != null)
                     rhs = EmitCondExpr(valueEdge.FromNodeId);
+                else if (!string.IsNullOrEmpty(node.ExpressionOverride))
+                    rhs = node.ExpressionOverride;
                 else
                     rhs = LiteralRhs(node);
 
@@ -384,7 +386,7 @@ namespace VisualScripting.Core.Generators
         private void EmitFor(NodeData forNode, StringBuilder sb, int indent)
         {
             var pad = Pad(indent);
-            var initStr = EmitForInitClause(forNode.Id);
+            var initStr = EmitForInitClause(forNode);
             var condStr = "";
             if (forNode.ConditionSubGraph != null && forNode.ConditionSubGraph.Nodes.Count > 0)
             {
@@ -397,7 +399,7 @@ namespace VisualScripting.Core.Generators
                 condStr = condEdge != null ? EmitCondExpr(condEdge.FromNodeId) : "";
             }
 
-            var incStr = EmitForIncrementClause(forNode.Id);
+            var incStr = EmitForIncrementClause(forNode);
             sb.AppendLine($"{pad}for ({initStr}; {condStr}; {incStr})");
             sb.AppendLine($"{pad}{{");
             PushScope();
@@ -416,10 +418,30 @@ namespace VisualScripting.Core.Generators
             sb.AppendLine($"{pad}}}");
         }
 
-        private string EmitForInitClause(string forId)
+        /// <summary>
+        /// Генерирует одно предложение for-клаузы (init или increment) из sub-графа.
+        /// Результат: "int i = 0" или "i++" — без точки с запятой.
+        /// </summary>
+        private string GenerateForClauseFromSubGraph(GraphData subGraph)
         {
+            if (subGraph == null || subGraph.Nodes.Count == 0) return "";
+            var sb = new StringBuilder();
+            GenerateStatementsFromSubGraph(subGraph, sb, 0);
+            // GenerateStatementsFromSubGraph добавляет ";\n" — убираем хвост и лишние пробелы
+            return sb.ToString()
+                .Replace(";\r\n", "").Replace(";\n", "")
+                .Trim();
+        }
+
+        private string EmitForInitClause(NodeData forNode)
+        {
+            // Новый путь: init хранится в SubGraph
+            if (forNode.InitSubGraph != null && forNode.InitSubGraph.Nodes.Count > 0)
+                return GenerateForClauseFromSubGraph(forNode.InitSubGraph);
+
+            // Устаревший путь: init-ребро в главном графе
             var initEdge = _graph.Edges.FirstOrDefault(
-                e => e.ToNodeId == forId && e.ToPort == "init");
+                e => e.ToNodeId == forNode.Id && e.ToPort == "init");
             if (initEdge == null)
                 return "";
 
@@ -437,10 +459,21 @@ namespace VisualScripting.Core.Generators
             return EmitStmtExpr(fromId);
         }
 
-        private string EmitForIncrementClause(string forId)
+        private string EmitForIncrementClause(NodeData forNode)
         {
+            // Новый путь: increment хранится в SubGraph
+            if (forNode.IncrementSubGraph != null && forNode.IncrementSubGraph.Nodes.Count > 0)
+            {
+                // Пробуем распознать паттерн varName++ / varName-- перед генерацией
+                var incDec = TryGetIncrementDecrementClause(forNode.IncrementSubGraph);
+                if (incDec != null) return incDec;
+
+                return GenerateForClauseFromSubGraph(forNode.IncrementSubGraph);
+            }
+
+            // Устаревший путь: increment-ребро в главном графе
             var incEdge = _graph.Edges.FirstOrDefault(
-                e => e.ToNodeId == forId && e.ToPort == "increment");
+                e => e.ToNodeId == forNode.Id && e.ToPort == "increment");
             if (incEdge == null)
                 return "";
 
@@ -470,6 +503,52 @@ namespace VisualScripting.Core.Generators
             }
 
             return EmitStmtExpr(fromId);
+        }
+
+        /// <summary>
+        /// Проверяет, содержит ли subGraph паттерн «varName = varName ± 1»
+        /// и если да — возвращает «varName++» или «varName--».
+        /// Иначе возвращает null, и вызывающий код падает на общую генерацию.
+        /// </summary>
+        private static string? TryGetIncrementDecrementClause(GraphData subGraph)
+        {
+            if (subGraph == null || subGraph.Nodes.Count == 0) return null;
+
+            var subMap = subGraph.Nodes.ToDictionary(n => n.Id);
+
+            // Ищем целевую ноду: литерал с variableName, в inputValue которого приходит MathAdd/Sub
+            foreach (var assignNode in subGraph.Nodes
+                         .Where(n => IsLiteral(n.Type) && !string.IsNullOrEmpty(n.VariableName)))
+            {
+                var varName = assignNode.VariableName;
+
+                var inputEdge = subGraph.Edges
+                    .FirstOrDefault(e => e.ToNodeId == assignNode.Id && e.ToPort == "inputValue");
+                if (inputEdge == null) continue;
+
+                if (!subMap.TryGetValue(inputEdge.FromNodeId, out var mathNode)) continue;
+                if (mathNode.Type != NodeType.MathAdd && mathNode.Type != NodeType.MathSubtract) continue;
+
+                // inputA должен ссылаться на ту же переменную
+                var inputAEdge = subGraph.Edges
+                    .FirstOrDefault(e => e.ToNodeId == mathNode.Id && e.ToPort == "inputA");
+                if (inputAEdge == null) continue;
+                if (!subMap.TryGetValue(inputAEdge.FromNodeId, out var refNode)) continue;
+                if (refNode.VariableName != varName) continue;
+
+                // inputB должен быть LiteralInt == 1
+                var inputBEdge = subGraph.Edges
+                    .FirstOrDefault(e => e.ToNodeId == mathNode.Id && e.ToPort == "inputB");
+                if (inputBEdge == null) continue;
+                if (!subMap.TryGetValue(inputBEdge.FromNodeId, out var litNode)) continue;
+                if (litNode.Type != NodeType.LiteralInt || litNode.Value != "1") continue;
+
+                return mathNode.Type == NodeType.MathAdd
+                    ? $"{varName}++"
+                    : $"{varName}--";
+            }
+
+            return null;
         }
 
         private void EmitWhile(NodeData whileNode, StringBuilder sb, int indent)
@@ -775,10 +854,24 @@ namespace VisualScripting.Core.Generators
                 _map.TryGetValue(e.ToNodeId, out var targetNode) &&
                 (targetNode.Type == NodeType.FlowIf || targetNode.Type == NodeType.FlowElse));
 
-            if (explicitFalse == null)
+            if (explicitFalse != null)
+            {
+                successor = _map[explicitFalse.ToNodeId];
+                return true;
+            }
+
+            // Совместимость с устаревшим форматом: некоторые старые графы хранили
+            // if→if/else через execOut вместо falseBranch.
+            var legacyExec = _graph.Edges.FirstOrDefault(e =>
+                e.FromNodeId == ifId &&
+                IsExecOutPort(e.FromPort) &&
+                _map.TryGetValue(e.ToNodeId, out var leg) &&
+                (leg.Type == NodeType.FlowIf || leg.Type == NodeType.FlowElse));
+
+            if (legacyExec == null)
                 return false;
 
-            successor = _map[explicitFalse.ToNodeId];
+            successor = _map[legacyExec.ToNodeId];
             return true;
         }
 

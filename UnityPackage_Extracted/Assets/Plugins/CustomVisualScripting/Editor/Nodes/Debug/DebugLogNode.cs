@@ -12,7 +12,7 @@ namespace CustomVisualScripting.Editor.Nodes.Debug
     /// но выводит сообщение в консоль Unity через <see cref="UnityEngine.Debug.Log(object)"/>.
     /// </summary>
     [Serializable, NodeMenuItem("Debug/Debug.Log")]
-    public class DebugLogNode : BaseFlowNode
+    public class DebugLogNode : BaseExecutionNode
     {
         public override NodeType NodeType => NodeType.DebugLog;
 

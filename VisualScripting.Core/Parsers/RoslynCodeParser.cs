@@ -323,6 +323,9 @@ namespace VisualScripting.Core.Parsers
                 if (rootNode != null && IsLiteralNodeType(rootNode.Type))
                 {
                     rootNode.VariableName = name;
+                    // Исправляем тип: тернарник и другие opaque-выражения создают LiteralString,
+                    // но объявленный тип переменной (vType) всегда точнее.
+                    rootNode.ValueType = vType;
                     litId = rootId;
                 }
                 else

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using GraphProcessor;
 using UnityEngine;
@@ -18,6 +19,13 @@ namespace CustomVisualScripting.Editor.Nodes.Literals
         [Output("output")]
         public object output;
 
+        // Exec-порты отображаются только когда нода является корневой (имеет variableName)
+        [Input("execIn")]
+        public object execIn;
+
+        [Output("execOut")]
+        public object execOut;
+
         [HideInInspector]
         public float floatValue = 0f;
 
@@ -27,6 +35,20 @@ namespace CustomVisualScripting.Editor.Nodes.Literals
         public override string name => string.IsNullOrEmpty(variableName)
             ? $"Float: {floatValue.ToString(CultureInfo.InvariantCulture)}"
             : $"{variableName} = {floatValue.ToString(CultureInfo.InvariantCulture)}";
+
+        [CustomPortBehavior(nameof(execIn))]
+        IEnumerable<PortData> GetExecInBehavior(List<SerializableEdge> edges)
+        {
+            if (IsStatementRootNode())
+                yield return new PortData { identifier = "execIn", displayName = "Exec In", acceptMultipleEdges = false };
+        }
+
+        [CustomPortBehavior(nameof(execOut))]
+        IEnumerable<PortData> GetExecOutBehavior(List<SerializableEdge> edges)
+        {
+            if (IsStatementRootNode())
+                yield return new PortData { identifier = "execOut", displayName = "Exec Out", acceptMultipleEdges = false };
+        }
 
         protected override void Process()
         {
