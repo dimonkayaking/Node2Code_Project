@@ -127,6 +127,47 @@ namespace CustomVisualScripting.Runtime.Execution
 
         private static string BuildProgram(string userCode)
         {
+            // Шим Debug-класса — один и тот же для обоих вариантов обёртки.
+            var debugShim = $@"// Шим UnityEngine.Debug для автономного C# runner'а: нода Debug.Log генерирует
+// вызов Debug.Log(...), и чтобы этот код собирался вне Unity — даём локальный тип.
+// Сообщения помечаются маркерами, чтобы редактор Unity перехватил их и сдублировал
+// в Unity-консоль через UnityEngine.Debug.Log/LogWarning/LogError.
+internal static class Debug
+{{
+    private const string LogMarker = ""{UnityDebugLogMarker}"";
+    private const string WarningMarker = ""{UnityDebugLogWarningMarker}"";
+    private const string ErrorMarker = ""{UnityDebugLogErrorMarker}"";
+
+    public static void Log(object message) => Console.WriteLine($""{{LogMarker}}{{message}}"");
+    public static void LogWarning(object message) => Console.WriteLine($""{{WarningMarker}}{{message}}"");
+    public static void LogError(object message) => Console.Error.WriteLine($""{{ErrorMarker}}{{message}}"");
+}}";
+
+            // Если GenerateWithMethods уже создал class Program — используем его напрямую.
+            // UTF8-кодировка инициализируется через [ModuleInitializer] до запуска Main.
+            if ((userCode ?? "").TrimStart().StartsWith("class Program"))
+            {
+                return $@"using System;
+using System.Text;
+using System.Runtime.CompilerServices;
+
+{userCode}
+
+// Автоматически вызывается средой выполнения до Program.Main().
+internal static class __VsRunnerInit
+{{
+    [ModuleInitializer]
+    internal static void Init()
+    {{
+        Console.OutputEncoding = Encoding.UTF8;
+        Console.InputEncoding = Encoding.UTF8;
+    }}
+}}
+
+{debugShim}";
+            }
+
+            // Плоский код (нет пользовательских методов) — оборачиваем в Main как прежде.
             return $@"using System;
 using System.Text;
 
@@ -149,20 +190,7 @@ internal static class Program
     }}
 }}
 
-// Шим UnityEngine.Debug для автономного C# runner'а: нода Debug.Log генерирует
-// вызов Debug.Log(...), и чтобы этот код собирался вне Unity — даём локальный тип.
-// Сообщения помечаются маркерами, чтобы редактор Unity перехватил их и сдублировал
-// в Unity-консоль через UnityEngine.Debug.Log/LogWarning/LogError.
-internal static class Debug
-{{
-    private const string LogMarker = ""{UnityDebugLogMarker}"";
-    private const string WarningMarker = ""{UnityDebugLogWarningMarker}"";
-    private const string ErrorMarker = ""{UnityDebugLogErrorMarker}"";
-
-    public static void Log(object message) => Console.WriteLine($""{{LogMarker}}{{message}}"");
-    public static void LogWarning(object message) => Console.WriteLine($""{{WarningMarker}}{{message}}"");
-    public static void LogError(object message) => Console.Error.WriteLine($""{{ErrorMarker}}{{message}}"");
-}}";
+{debugShim}";
         }
 
         /// <summary>Маркер начала строки stdout, помечающий вызов Debug.Log в сгенерированном коде.</summary>

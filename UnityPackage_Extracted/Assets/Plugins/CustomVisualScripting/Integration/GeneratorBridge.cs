@@ -31,8 +31,10 @@ namespace CustomVisualScripting.Integration
         }
 
         /// <summary>
-        /// Генерирует полный код: сначала объявления методов (как локальные static-функции),
-        /// затем код основного графа.
+        /// Генерирует полный код в виде валидного C#:
+        /// <c>class Program { static void Main() { ... } static void Method1(...) { ... } }</c>.
+        /// Если методов нет — возвращает плоский код основного графа (для обратной совместимости
+        /// с <see cref="CSharpProcessRunner"/>, который оборачивает плоский код в Main сам).
         /// Конвертация MethodDefinition → MethodInfo выполняется на стороне вызывающего (Editor-слой).
         /// </summary>
         public static string GenerateWithMethods(GraphData mainGraph, IEnumerable<MethodInfo> methods)
@@ -49,34 +51,48 @@ namespace CustomVisualScripting.Integration
             foreach (var info in methodInfos.Values)
                 if (info.BodyGraph != null) NormalizePorts(info.BodyGraph);
 
-            var sb = new StringBuilder();
+            // ── Код основного графа (0-indent) ───────────────────────────────
+            var mainCode = mainGraph != null
+                ? _generator.Generate(mainGraph, methodInfos)
+                : null;
 
-            // Объявления методов как локальных static-функций (допустимо в C# 8+)
+            // ── Собираем class Program { ... } ───────────────────────────────
+            var sb = new StringBuilder();
+            sb.AppendLine("class Program");
+            sb.AppendLine("{");
+            sb.AppendLine("    static void Main()");
+            sb.AppendLine("    {");
+
+            if (!string.IsNullOrWhiteSpace(mainCode))
+            {
+                // Основной код начинается с 0-indent → добавляем 2 уровня (8 пробелов)
+                sb.AppendLine(IndentLines(mainCode, 2));
+            }
+
+            sb.AppendLine("    }");
+
+            // Статические методы уровня класса (1 уровень = 4 пробела)
             foreach (var def in methodInfos.Values.Where(d => !string.IsNullOrWhiteSpace(d.Name)))
             {
-                var methodCode = BuildLocalFunction(def, methodInfos);
+                var methodCode = BuildStaticMethod(def, methodInfos);
                 if (!string.IsNullOrWhiteSpace(methodCode))
                 {
-                    sb.AppendLine(methodCode);
                     sb.AppendLine();
+                    sb.AppendLine(IndentLines(methodCode, 1));
                 }
             }
 
-            // Код основного графа
-            if (mainGraph != null)
-            {
-                var mainCode = _generator.Generate(mainGraph, methodInfos);
-                if (!string.IsNullOrWhiteSpace(mainCode))
-                    sb.Append(mainCode);
-            }
-
+            sb.AppendLine("}");
             return sb.ToString().TrimEnd();
         }
 
         // ─── Вспомогательные ─────────────────────────────────────────────────
 
-        /// <summary>Строит объявление локальной статической функции.</summary>
-        private static string BuildLocalFunction(MethodInfo def,
+        /// <summary>
+        /// Строит объявление статического метода уровня класса.
+        /// Сигнатура без отступа; тело — с 1 уровнем отступа (как возвращает GenerateMethodBody).
+        /// </summary>
+        private static string BuildStaticMethod(MethodInfo def,
             IReadOnlyDictionary<string, MethodInfo> allMethods)
         {
             var paramList = string.Join(", ",
@@ -94,6 +110,29 @@ namespace CustomVisualScripting.Integration
             var bodyCode = _generator.GenerateMethodBody(def.BodyGraph, def, allMethods);
 
             return $"{signature}\n{{\n{bodyCode}\n}}";
+        }
+
+        // Псевдоним для обратной совместимости — не используется снаружи.
+        private static string BuildLocalFunction(MethodInfo def,
+            IReadOnlyDictionary<string, MethodInfo> allMethods)
+            => BuildStaticMethod(def, allMethods);
+
+        /// <summary>Добавляет <paramref name="levels"/>×4 пробела к каждой непустой строке кода.</summary>
+        private static string IndentLines(string code, int levels)
+        {
+            if (string.IsNullOrEmpty(code)) return code;
+            var prefix = new string(' ', levels * 4);
+            var lines = code.Replace("\r\n", "\n").Split('\n');
+            var sb = new StringBuilder();
+            for (int i = 0; i < lines.Length; i++)
+            {
+                var l = lines[i];
+                if (i < lines.Length - 1)
+                    sb.AppendLine(l.Length == 0 ? "" : prefix + l);
+                else
+                    sb.Append(l.Length == 0 ? "" : prefix + l);
+            }
+            return sb.ToString();
         }
 
         private static void NormalizePorts(GraphData graph)

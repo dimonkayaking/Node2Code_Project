@@ -55,6 +55,11 @@ namespace VisualScripting.Core.Models
 
         // Пользовательские методы
         MethodCall,
-        MethodParam
+        MethodParam,
+        ReturnValue,
+
+        // Классы
+        ClassNode,
+        MethodOwner
     }
 }

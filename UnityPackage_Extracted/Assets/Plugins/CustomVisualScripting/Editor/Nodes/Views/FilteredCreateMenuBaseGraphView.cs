@@ -201,9 +201,10 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         protected virtual bool ShouldHideMenuPath(string path)
         {
             if (string.IsNullOrEmpty(path)) return false;
-            return path.StartsWith("Utils/")   || path.StartsWith("Utils") ||
-                   path.StartsWith("Unity/")   || path.StartsWith("Unity") ||
-                   path.StartsWith("Method/")  || path.StartsWith("Method");
+            return path.StartsWith("Utils/")   || path.StartsWith("Utils")  ||
+                   path.StartsWith("Unity/")   || path.StartsWith("Unity")  ||
+                   path.StartsWith("Method/")  || path.StartsWith("Method") ||
+                   path.StartsWith("Class/")   || path.StartsWith("Class");
         }
     }
 }

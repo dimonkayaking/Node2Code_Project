@@ -605,7 +605,7 @@ namespace VisualScripting.Core.Generators
                     ? $"{f.ToString(System.Globalization.CultureInfo.InvariantCulture)}f"
                     : "0f",
                 "bool" => bool.TryParse(raw, out var b) ? b.ToString().ToLowerInvariant() : "false",
-                _ => $"\"{raw.Replace("\\", "\\\\").Replace("\"", "\\\"")}\""
+                _ => $"\"{EscapeString(raw)}\""
             };
         }
 
@@ -746,11 +746,24 @@ namespace VisualScripting.Core.Generators
 
         private static string LiteralRhs(NodeData n) => n.ValueType switch
         {
-            "string" => $"\"{n.Value.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"",
+            "string" => $"\"{EscapeString(n.Value)}\"",
             "float" => $"{n.Value}f",
             "bool" => n.Value.ToLowerInvariant(),
             _ => n.Value
         };
+
+        /// <summary>Экранирует спецсимволы строки для вставки в строковый литерал C#.</summary>
+        private static string EscapeString(string s)
+        {
+            if (s == null) return "";
+            return s
+                .Replace("\\", "\\\\")   // сначала одиночный обратный слэш
+                .Replace("\r\n", "\\r\\n")
+                .Replace("\n", "\\n")
+                .Replace("\r", "\\r")
+                .Replace("\t", "\\t")
+                .Replace("\"", "\\\"");
+        }
 
         private static string KeywordFor(string? vt) => vt switch
         {

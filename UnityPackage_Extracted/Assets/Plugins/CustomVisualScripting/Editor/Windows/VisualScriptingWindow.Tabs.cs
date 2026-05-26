@@ -123,6 +123,8 @@ namespace CustomVisualScripting.Editor.Windows
                         SyncSubspaceRuntime(leavingSubspace);
                     else if (_methodTabRuntimes.TryGetValue(previousTabId, out var leavingMethod))
                         SyncMethodRuntime(leavingMethod);
+                    else if (_classTabRuntimes.TryGetValue(previousTabId, out var leavingClass))
+                        SyncClassRuntime(leavingClass);
                 }
             }
 
@@ -144,6 +146,8 @@ namespace CustomVisualScripting.Editor.Windows
 
             if (tabId.StartsWith(MethodTabPrefix, StringComparison.Ordinal))
                 DisposeMethodRuntime(tabId);
+            else if (tabId.StartsWith(ClassTabPrefix, StringComparison.Ordinal))
+                DisposeClassRuntime(tabId);
             else
                 DisposeSubspaceRuntime(tabId);
 
@@ -171,6 +175,12 @@ namespace CustomVisualScripting.Editor.Windows
             {
                 activeView = methodRuntime.BodyGraphView;
                 _graphHost.Add(methodRuntime.Container);
+            }
+            else if (_classTabRuntimes.TryGetValue(_activeTabId, out var classRuntime) &&
+                     classRuntime?.Container != null)
+            {
+                activeView = classRuntime.BodyGraphView;
+                _graphHost.Add(classRuntime.Container);
             }
             else if (_subspaceRuntimes.TryGetValue(_activeTabId, out var subspaceRuntime) &&
                      subspaceRuntime?.GraphView != null)
@@ -439,6 +449,7 @@ namespace CustomVisualScripting.Editor.Windows
         {
             DisposeAllSubspaceRuntimes();
             DisposeAllMethodRuntimes();
+            DisposeAllClassRuntimes();
             _tabs.Clear();
             _tabs.Add(new TabDescriptor
             {

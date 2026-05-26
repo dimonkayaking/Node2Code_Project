@@ -5,6 +5,7 @@ using UnityEditor;
 using UnityEngine;
 using UnityEngine.UIElements;
 using GraphProcessor;
+using CustomVisualScripting.Editor.Classes;
 using CustomVisualScripting.Editor.Methods;
 using CustomVisualScripting.Editor.Nodes.Base;
 using CustomVisualScripting.Editor.Nodes.Methods;
@@ -17,9 +18,6 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         private BaseGraphView _graphView;
         private readonly Dictionary<string, List<(string path, Type type)>> _categories;
         private VisualElement _contentContainer;
-
-        // Состояние текущего экрана панели
-        private bool _showingMethodsCategory;
 
         private static readonly Dictionary<string, Color> CategoryColors = new()
         {
@@ -34,6 +32,11 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         };
 
         private static readonly Color MethodColor = HexColor("#00BCD4");
+        private static readonly Color ClassColor  = HexColor("#4CAF50"); // зелёный — категория «Классы»
+
+        // Состояние текущего экрана
+        private bool _showingMethodsCategory;
+        private bool _showingClassesCategory;
 
         public NodeToolbarView(BaseGraphView graphView)
         {
@@ -51,7 +54,12 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             ShowCategories();
 
             MethodRegistry.OnChanged += OnMethodsChanged;
-            RegisterCallback<DetachFromPanelEvent>(_ => MethodRegistry.OnChanged -= OnMethodsChanged);
+            ClassRegistry.OnChanged  += OnClassesChanged;
+            RegisterCallback<DetachFromPanelEvent>(_ =>
+            {
+                MethodRegistry.OnChanged -= OnMethodsChanged;
+                ClassRegistry.OnChanged  -= OnClassesChanged;
+            });
         }
 
         public void UpdateGraphView(BaseGraphView newGraphView)
@@ -101,9 +109,13 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         private void ShowCategories()
         {
             _showingMethodsCategory = false;
+            _showingClassesCategory = false;
             _contentContainer.Clear();
 
-            // Категория «Методы» первой, выделена цветом
+            // Категория «Классы» первой — зелёная
+            _contentContainer.Add(CreateClassesCategoryButton());
+
+            // Категория «Методы» — циановая
             _contentContainer.Add(CreateMethodsCategoryButton());
 
             // Разделитель
@@ -114,10 +126,210 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             sep.style.marginBottom    = 4;
             _contentContainer.Add(sep);
 
-            // Остальные категории
+            // Стандартные категории (Class/ уже скрыт через ShouldHideMenuPath)
             foreach (var cat in _categories)
                 _contentContainer.Add(CreateCategoryButton(cat.Key));
         }
+
+        // ─── Экран классов ────────────────────────────────────────────────────
+
+        private VisualElement CreateClassesCategoryButton()
+        {
+            int count = ClassRegistry.Classes.Count;
+            var btn = new Button(ShowClassesCategory);
+            btn.text = count > 0 ? $"Классы  ({count})" : "Классы";
+            StyleCategoryButton(btn, ClassColor);
+            return btn;
+        }
+
+        private void ShowClassesCategory()
+        {
+            _showingMethodsCategory = false;
+            _showingClassesCategory = true;
+            _contentContainer.Clear();
+
+            var backBtn = new Button(ShowCategories) { text = "← Back" };
+            StyleBackButton(backBtn);
+            _contentContainer.Add(backBtn);
+
+            var titleLbl = new Label("Классы");
+            titleLbl.style.fontSize               = 13;
+            titleLbl.style.unityFontStyleAndWeight = FontStyle.Bold;
+            titleLbl.style.color                   = ClassColor;
+            titleLbl.style.paddingBottom           = 6;
+            titleLbl.style.marginBottom            = 6;
+            titleLbl.style.borderBottomWidth       = 1;
+            titleLbl.style.borderBottomColor       = new Color(0.3f, 0.3f, 0.3f);
+            titleLbl.style.unityTextAlign          = TextAnchor.MiddleCenter;
+            _contentContainer.Add(titleLbl);
+
+            var createBtn = new Button(OnCreateClassClicked) { text = "+ Создать класс" };
+            createBtn.style.fontSize        = 12;
+            createBtn.style.paddingTop      = 8;
+            createBtn.style.paddingBottom   = 8;
+            createBtn.style.backgroundColor = new Color(0.22f, 0.22f, 0.22f);
+            createBtn.style.marginBottom    = 8;
+            createBtn.style.alignSelf       = Align.Stretch;
+            createBtn.style.flexGrow        = 1;
+            createBtn.style.width           = Length.Percent(100);
+            ApplyBorder(createBtn, ClassColor);
+            createBtn.RegisterCallback<MouseEnterEvent>(_ =>
+                createBtn.style.backgroundColor = new Color(0.32f, 0.32f, 0.32f));
+            createBtn.RegisterCallback<MouseLeaveEvent>(_ =>
+                createBtn.style.backgroundColor = new Color(0.22f, 0.22f, 0.22f));
+            _contentContainer.Add(createBtn);
+
+            var classes = ClassRegistry.Classes;
+            if (classes.Count == 0)
+            {
+                var empty = new Label("  (нет классов)");
+                empty.style.color    = new Color(0.5f, 0.5f, 0.5f);
+                empty.style.fontSize = 11;
+                _contentContainer.Add(empty);
+                return;
+            }
+
+            foreach (var def in classes)
+                _contentContainer.Add(BuildClassRow(def));
+        }
+
+        private VisualElement BuildClassRow(ClassDefinition def)
+        {
+            var row = new VisualElement();
+            row.style.flexDirection = FlexDirection.Row;
+            row.style.alignItems    = Align.Center;
+            row.style.marginTop     = 2;
+            row.style.marginBottom  = 2;
+
+            // Кнопка «создать ClassNode»
+            var placeBtn = new Button(() => CreateClassNodeOnGraph(def.Id));
+            placeBtn.text                  = def.Name;
+            placeBtn.tooltip               = $"Разместить ноду класса «{def.Name}» на графе";
+            placeBtn.style.flexGrow        = 1;
+            placeBtn.style.fontSize        = 12;
+            placeBtn.style.paddingTop      = 6;
+            placeBtn.style.paddingBottom   = 6;
+            placeBtn.style.paddingLeft     = 8;
+            placeBtn.style.backgroundColor = new Color(0.25f, 0.25f, 0.25f);
+            placeBtn.style.unityTextAlign  = TextAnchor.MiddleLeft;
+            placeBtn.style.textOverflow    = TextOverflow.Ellipsis;
+            placeBtn.style.overflow        = Overflow.Hidden;
+            placeBtn.style.whiteSpace      = WhiteSpace.NoWrap;
+            ApplyBorder(placeBtn, ClassColor);
+            row.Add(placeBtn);
+
+            // Кнопка «✎ открыть тело класса»
+            var editBtn = new Button(() => OnOpenClassClicked(def.Id)) { text = "✎" };
+            editBtn.tooltip               = "Открыть тело класса";
+            editBtn.style.width           = 26;
+            editBtn.style.fontSize        = 12;
+            editBtn.style.paddingLeft     = 0;
+            editBtn.style.paddingRight    = 0;
+            editBtn.style.marginLeft      = 2;
+            editBtn.style.backgroundColor = new Color(0.25f, 0.25f, 0.25f);
+            ApplyBorder(editBtn, new Color(0.6f, 0.6f, 0.6f));
+            row.Add(editBtn);
+
+            // Кнопка «✕ удалить»
+            var delBtn = new Button(() => OnDeleteClassClicked(def.Id)) { text = "✕" };
+            delBtn.tooltip               = "Удалить класс";
+            delBtn.style.width           = 26;
+            delBtn.style.fontSize        = 12;
+            delBtn.style.paddingLeft     = 0;
+            delBtn.style.paddingRight    = 0;
+            delBtn.style.marginLeft      = 2;
+            delBtn.style.backgroundColor = new Color(0.3f, 0.15f, 0.15f);
+            ApplyBorder(delBtn, new Color(0.8f, 0.3f, 0.3f));
+            row.Add(delBtn);
+
+            return row;
+        }
+
+        // ─── Обработчики классов ──────────────────────────────────────────────
+
+        private void OnClassesChanged()
+        {
+            if (_showingClassesCategory)
+                ShowClassesCategory();
+            else
+                ShowCategories();
+        }
+
+        private void OnCreateClassClicked()
+        {
+            CreateClassPopup.ShowCreate(def =>
+            {
+                ClassRegistry.Add(def);
+                VisualScriptingWindow.ActiveWindow?.OpenClassTab(def.Id);
+            }, GetUniqueClassName());
+        }
+
+        private void OnOpenClassClicked(string classId)
+        {
+            VisualScriptingWindow.ActiveWindow?.OpenClassTab(classId);
+        }
+
+        private void OnDeleteClassClicked(string classId)
+        {
+            var def = ClassRegistry.GetById(classId);
+            if (def == null) return;
+            bool ok = EditorUtility.DisplayDialog(
+                "Удалить класс",
+                $"Удалить класс «{def.Name}»?\nВсе ноды этого класса станут недействительными.",
+                "Удалить", "Отмена");
+            if (!ok) return;
+            VisualScriptingWindow.ActiveWindow?.CloseClassTab(classId);
+            ClassRegistry.Remove(classId);
+        }
+
+        private void CreateClassNodeOnGraph(string classId)
+        {
+            if (_graphView == null || _graphView.graph == null)
+            {
+                UnityEngine.Debug.LogError("[NodeToolbarView] Graph is not initialized.");
+                return;
+            }
+
+            var def = ClassRegistry.GetById(classId);
+            if (def == null) return;
+
+            Rect    graphRect    = _graphView.layout;
+            Vector2 screenCenter = new Vector2(graphRect.width / 2f, graphRect.height / 2f);
+#pragma warning disable 0618
+            Vector2 pan   = (Vector2)_graphView.viewTransform.position;
+            float   scale = _graphView.scale;
+#pragma warning restore 0618
+            Vector2 graphCenter = (screenCenter - pan) / scale;
+            Vector2 finalPos    = FindFreePosition(graphCenter, 220, 100, 25f);
+
+            var node = new ClassNode
+            {
+                ClassId   = def.Id,
+                ClassName = def.Name
+            };
+            if (string.IsNullOrEmpty(node.GUID)) node.GUID = Guid.NewGuid().ToString();
+            node.NodeId   = node.GUID;
+            node.position = new Rect(finalPos.x, finalPos.y, 220, 100);
+
+            try { _graphView.AddNode(node); }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogError($"[NodeToolbarView] Failed to add class node: {e.Message}");
+            }
+        }
+
+        private static string GetUniqueClassName()
+        {
+            var existing = new HashSet<string>(
+                ClassRegistry.Classes.Select(c => c.Name),
+                StringComparer.OrdinalIgnoreCase);
+            if (!existing.Contains("MyClass")) return "MyClass";
+            int n = 1;
+            while (existing.Contains($"MyClass{n}")) n++;
+            return $"MyClass{n}";
+        }
+
+        // ─── Кнопка категории методов ─────────────────────────────────────────
 
         private VisualElement CreateMethodsCategoryButton()
         {
@@ -133,6 +345,7 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         private void ShowMethodsCategory()
         {
             _showingMethodsCategory = true;
+            _showingClassesCategory = false;
             _contentContainer.Clear();
 
             // ← Назад
@@ -501,9 +714,10 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         private static bool ShouldHideMenuPath(string path)
         {
             if (string.IsNullOrEmpty(path)) return false;
-            return path.StartsWith("Utils/")  || path.StartsWith("Utils") ||
-                   path.StartsWith("Unity/")  || path.StartsWith("Unity") ||
-                   path.StartsWith("Method/") || path.StartsWith("Method");
+            return path.StartsWith("Utils/")  || path.StartsWith("Utils")  ||
+                   path.StartsWith("Unity/")  || path.StartsWith("Unity")  ||
+                   path.StartsWith("Method/") || path.StartsWith("Method") ||
+                   path.StartsWith("Class/")  || path.StartsWith("Class");
         }
 
         // ─── Стилизация ──────────────────────────────────────────────────────

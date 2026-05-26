@@ -5,6 +5,7 @@ using GraphProcessor;
 using UnityEngine;
 using VisualScripting.Core.Models;
 using CustomVisualScripting.Editor.Nodes.Base;
+
 using CustomVisualScripting.Editor.Methods;
 
 namespace CustomVisualScripting.Editor.Nodes.Methods
@@ -19,7 +20,7 @@ namespace CustomVisualScripting.Editor.Nodes.Methods
     /// "int x" никогда не будет сброшен обратно в "param0" при внутренних обновлениях.
     /// </summary>
     [Serializable]
-    public class MethodCallNode : CustomBaseNode
+    public class MethodCallNode : BaseExecutionNode
     {
         public const int MaxParams = 8;
 

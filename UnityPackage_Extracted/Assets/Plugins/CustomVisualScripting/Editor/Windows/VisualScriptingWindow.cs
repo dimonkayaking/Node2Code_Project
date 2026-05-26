@@ -16,6 +16,7 @@ using CustomVisualScripting.Runtime.Execution;
 using VisualScripting.Core.Models;
 using CustomToolbar = CustomVisualScripting.Windows.Views.ToolbarView;
 using CustomVisualScripting.Editor;
+using CustomVisualScripting.Editor.Classes;
 using CustomVisualScripting.Editor.Methods;
 
 namespace CustomVisualScripting.Editor.Windows
@@ -260,10 +261,12 @@ namespace CustomVisualScripting.Editor.Windows
 
             SyncFullGraphFromView();
             SyncAllMethodRuntimes();
+            SyncAllClassRuntimes();
             string code = GeneratorBridge.GenerateWithMethods(_currentGraph.LogicGraph, ToMethodInfos(MethodRegistry.Methods));
             _codeEditor.Code = code;
             SaveCodeToPath(_currentFilePath, code);
             SaveMethodsToPath(GetMethodsFilePath(_currentFilePath));
+            SaveClassesToPath(GetClassesFilePath(_currentFilePath));
         }
         
         private void OnSaveAs()
@@ -277,12 +280,14 @@ namespace CustomVisualScripting.Editor.Windows
 
             SyncFullGraphFromView();
             SyncAllMethodRuntimes();
+            SyncAllClassRuntimes();
             string code = GeneratorBridge.GenerateWithMethods(_currentGraph.LogicGraph, ToMethodInfos(MethodRegistry.Methods));
             _codeEditor.Code = code;
             _currentFilePath = path;
             RefreshFileTabTitle();
             SaveCodeToPath(path, code);
             SaveMethodsToPath(GetMethodsFilePath(path));
+            SaveClassesToPath(GetClassesFilePath(path));
         }
 
         private bool HasCurrentFilePath() => !string.IsNullOrWhiteSpace(_currentFilePath);
@@ -314,7 +319,8 @@ namespace CustomVisualScripting.Editor.Windows
                 ResetTabsToFileOnly();
                 RefreshFileTabTitle();
 
-                // Загружаем методы сначала, чтобы парсер мог распознать их вызовы
+                // Загружаем классы и методы до парсинга
+                LoadClassesFromPath(GetClassesFilePath(path));
                 LoadMethodsFromPath(GetMethodsFilePath(path));
 
                 var result = ParserBridge.ParseWithMethods(code, ToMethodInfos(MethodRegistry.Methods));
@@ -351,6 +357,7 @@ namespace CustomVisualScripting.Editor.Windows
             _hasUnsavedChanges = false;
             _collapseFlowSubspacesOnNextRebuild = false;
             MethodRegistry.Clear();
+            ClassRegistry.Clear();
             ResetTabsToFileOnly();
             RecreateGraphView();
             _toolbar.SetStatusNormal("Очищено");

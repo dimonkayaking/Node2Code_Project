@@ -44,6 +44,8 @@ namespace VisualScripting.Core.Parsers
         private List<MethodInfo> _discoveredMethods = new List<MethodInfo>();
         // Флаг: предотвращает рекурсивный парсинг тел вложенных локальных функций
         private bool _isParsingFunctionBody;
+        // Методы класса, извлечённые из top-level class wrapper при StripClassWrapper
+        private List<MethodDeclarationSyntax> _pendingClassMethods = new List<MethodDeclarationSyntax>();
 
         /// <summary>Передаёт метаданные зарегистрированных методов до вызова Parse().</summary>
         public void SetKnownMethods(IReadOnlyList<MethodInfo> methods)
@@ -65,12 +67,17 @@ namespace VisualScripting.Core.Parsers
             _subGraphVarRefs = null;
             _discoveredMethods = new List<MethodInfo>();
             _isParsingFunctionBody = false;
+            _pendingClassMethods = new List<MethodDeclarationSyntax>();
 
             if (string.IsNullOrWhiteSpace(code))
             {
                 _errors.Add("Код пуст");
                 return Result();
             }
+
+            // Если код содержит top-level class/namespace — извлекаем тело Main-метода
+            // и собираем прочие методы класса в _pendingClassMethods.
+            code = StripClassWrapper(code);
 
             var wrapped = WrapPrefix + code + WrapSuffix;
 
@@ -99,6 +106,23 @@ namespace VisualScripting.Core.Parsers
             }
 
             VisitMethodBody(method.Body);
+
+            // Парсим тела методов, извлечённых из class-обёртки, и добавляем в DiscoveredMethods.
+            // Это позволяет парсить файлы с несколькими методами в классе.
+            if (_pendingClassMethods.Count > 0 && !_isParsingFunctionBody)
+            {
+                _isParsingFunctionBody = true;
+                try
+                {
+                    foreach (var mdecl in _pendingClassMethods)
+                        ParseAndDiscoverClassMethod(mdecl);
+                }
+                finally
+                {
+                    _isParsingFunctionBody = false;
+                }
+            }
+
             return Result();
         }
 
@@ -109,6 +133,124 @@ namespace VisualScripting.Core.Parsers
                 Errors            = _errors,
                 DiscoveredMethods = _discoveredMethods
             };
+
+        /// <summary>
+        /// Если <paramref name="code"/> содержит top-level объявление класса/namespace,
+        /// извлекает тело метода Main в качестве основного кода.
+        /// Все прочие (не-Main) static-методы собираются в <see cref="_pendingClassMethods"/>,
+        /// а их сигнатуры сразу добавляются в <see cref="_knownMethods"/> — так вызовы этих методов
+        /// внутри Main распознаются как <c>NodeType.MethodCall</c>.
+        /// </summary>
+        private string StripClassWrapper(string code)
+        {
+            var trimmed = code.TrimStart();
+            if (!LooksLikeTopLevelDeclaration(trimmed))
+                return code;
+
+            var rawTree = CSharpSyntaxTree.ParseText(
+                code, new CSharpParseOptions(LanguageVersion.Latest));
+            var rawRoot = rawTree.GetCompilationUnitRoot();
+
+            var allMethods = rawRoot.DescendantNodes()
+                .OfType<MethodDeclarationSyntax>()
+                .ToList();
+
+            var mainMethod = allMethods.FirstOrDefault(m => m.Identifier.Text == "Main")
+                             ?? allMethods.FirstOrDefault();
+
+            if (mainMethod == null)
+                return code;
+
+            // Предварительно регистрируем все не-Main методы как известные,
+            // чтобы вызовы внутри Main создавали MethodCallNode.
+            var extraMethods = new List<MethodInfo>(_knownMethods);
+            foreach (var m in allMethods)
+            {
+                if (m == mainMethod || m.Body == null) continue;
+                _pendingClassMethods.Add(m);
+                var sig = BuildMethodInfoSignature(m);
+                if (sig != null) extraMethods.Add(sig);
+            }
+            if (extraMethods.Count > _knownMethods.Count)
+                _knownMethods = extraMethods;
+
+            var methodBody = mainMethod.Body;
+            if (methodBody == null || methodBody.Statements.Count == 0)
+                return code;
+
+            var start = methodBody.Statements.First().SpanStart;
+            var end   = methodBody.Statements.Last().Span.End;
+            return code.Substring(start, end - start);
+        }
+
+        /// <summary>
+        /// Строит <see cref="MethodInfo"/> только с сигнатурой (без тела) для class-level метода.
+        /// ID: <c>"__classfn__" + methodName</c> — стабильный между сессиями.
+        /// </summary>
+        private static MethodInfo BuildMethodInfoSignature(MethodDeclarationSyntax mdecl)
+        {
+            if (mdecl == null) return null;
+            var name = mdecl.Identifier.Text;
+            var returnTypeStr = mdecl.ReturnType.ToString().Trim();
+            var returnType = returnTypeStr switch
+            {
+                "void"   => "void",
+                "float"  => "float",
+                "bool"   => "bool",
+                "string" => "string",
+                _        => "int"
+            };
+            var paramNames = new List<string>();
+            var paramTypes = new List<string>();
+            foreach (var p in mdecl.ParameterList.Parameters)
+            {
+                paramNames.Add(p.Identifier.Text);
+                var typeStr = p.Type?.ToString().Trim() ?? "int";
+                paramTypes.Add(typeStr switch
+                {
+                    "float"  => "float",
+                    "bool"   => "bool",
+                    "string" => "string",
+                    _        => "int"
+                });
+            }
+            return new MethodInfo
+            {
+                Id         = "__classfn__" + name,
+                Name       = name,
+                ReturnType = returnType,
+                ParamNames = paramNames,
+                ParamTypes = paramTypes,
+                BodyGraph  = null
+            };
+        }
+
+        /// <summary>
+        /// Парсит тело class-level метода и добавляет результат в <see cref="_discoveredMethods"/>.
+        /// Берёт сигнатуру из ранее зарегистрированного <see cref="_knownMethods"/> по ID.
+        /// </summary>
+        private void ParseAndDiscoverClassMethod(MethodDeclarationSyntax mdecl)
+        {
+            if (mdecl?.Body == null) return;
+            var id = "__classfn__" + mdecl.Identifier.Text;
+            var mi = _knownMethods.FirstOrDefault(m => m.Id == id)
+                     ?? BuildMethodInfoSignature(mdecl);
+            if (mi == null) return;
+            mi.BodyGraph = ParseMethodBodyGraph(mdecl.Body, mi);
+            _discoveredMethods.Add(mi);
+        }
+
+        private static bool LooksLikeTopLevelDeclaration(string trimmed)
+        {
+            foreach (var kw in new[] { "class ", "namespace ", "public class", "internal class",
+                                        "private class", "static class", "public static class",
+                                        "internal static class" })
+            {
+                if (trimmed.StartsWith(kw, StringComparison.Ordinal))
+                    return true;
+            }
+            return false;
+        }
 
         private static string FormatUserLocation(SyntaxTree tree, TextSpan span)
         {
@@ -545,7 +687,14 @@ namespace VisualScripting.Core.Parsers
                         string.Equals(m.Name, candidateName, System.StringComparison.Ordinal));
                     if (userMethod != null)
                     {
-                        CreateMethodCallNode(userMethod, invUser, false, null, out _);
+                        var callId = CreateMethodCallNode(userMethod, invUser, false, null, out _);
+                        if (callId != null)
+                        {
+                            // Подключаем к exec-цепочке (MethodCallNode наследует BaseExecutionNode)
+                            if (prevNode != null)
+                                AddEdge(prevNode, prevPort, callId, PortIds.ExecIn);
+                            return new FlowHost { NodeId = callId, ExecOutPort = PortIds.ExecOut };
+                        }
                         return null;
                     }
                 }

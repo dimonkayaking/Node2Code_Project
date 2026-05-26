@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using GraphProcessor;
+using Newtonsoft.Json;
 using CustomVisualScripting.Editor.Methods;
 using CustomVisualScripting.Editor.Nodes.Base;
 using CustomVisualScripting.Editor;
@@ -97,13 +98,21 @@ namespace CustomVisualScripting.Editor.Windows
                 SyncMethodRuntime(rt);
         }
 
+        // Настройки Newtonsoft: без TypeNameHandling (всё — конкретные типы), игнорируем null и циклы.
+        private static readonly JsonSerializerSettings _jsonSettings = new JsonSerializerSettings
+        {
+            Formatting            = Formatting.Indented,
+            NullValueHandling     = NullValueHandling.Ignore,
+            ReferenceLoopHandling = ReferenceLoopHandling.Ignore
+        };
+
         internal void SaveMethodsToPath(string path)
         {
             if (string.IsNullOrWhiteSpace(path)) return;
             try
             {
                 var wrapper = new MethodListWrapper { Methods = MethodRegistry.Methods.ToList() };
-                File.WriteAllText(path, JsonUtility.ToJson(wrapper, true));
+                File.WriteAllText(path, JsonConvert.SerializeObject(wrapper, _jsonSettings));
             }
             catch (Exception e)
             {
@@ -120,7 +129,8 @@ namespace CustomVisualScripting.Editor.Windows
             }
             try
             {
-                var wrapper = JsonUtility.FromJson<MethodListWrapper>(File.ReadAllText(path));
+                var wrapper = JsonConvert.DeserializeObject<MethodListWrapper>(
+                    File.ReadAllText(path), _jsonSettings);
                 if (wrapper?.Methods != null) MethodRegistry.ReplaceAll(wrapper.Methods);
                 else                          MethodRegistry.Clear();
             }

@@ -124,6 +124,10 @@ namespace VisualScripting.Core.Parsers
                 return Result();
             }
 
+            // Если код содержит top-level class/namespace — извлекаем тело Main-метода,
+            // чтобы не получить «class внутри метода» при оборачивании.
+            code = StripClassWrapper(code);
+
             var wrapped = WrapPrefix + code + WrapSuffix;
 
             var tree = CSharpSyntaxTree.ParseText(
@@ -156,6 +160,57 @@ namespace VisualScripting.Core.Parsers
 
         private ParseResult Result() =>
             new ParseResult { Graph = _graph, Errors = _errors };
+
+        /// <summary>
+        /// Если <paramref name="code"/> содержит top-level объявление класса/namespace,
+        /// пытается извлечь тело первого метода с именем Main (или первого метода вообще).
+        /// Иначе возвращает исходный код без изменений.
+        /// Это позволяет парсить полные файлы вида <c>class Program { static void Main() { ... } }</c>.
+        /// </summary>
+        private static string StripClassWrapper(string code)
+        {
+            var trimmed = code.TrimStart();
+            // Быстрая эвристика: есть ли top-level class/namespace?
+            if (!LooksLikeTopLevelDeclaration(trimmed))
+                return code;
+
+            // Парсим без обёртки, ищем тело метода Main
+            var rawTree = CSharpSyntaxTree.ParseText(
+                code, new CSharpParseOptions(LanguageVersion.Latest));
+            var rawRoot = rawTree.GetCompilationUnitRoot();
+
+            // Сначала пробуем метод с именем Main, затем любой первый метод
+            var methodBody = rawRoot.DescendantNodes()
+                                 .OfType<MethodDeclarationSyntax>()
+                                 .FirstOrDefault(m => m.Identifier.Text == "Main")
+                                 ?.Body
+                             ?? rawRoot.DescendantNodes()
+                                 .OfType<MethodDeclarationSyntax>()
+                                 .FirstOrDefault()
+                                 ?.Body;
+
+            if (methodBody == null || methodBody.Statements.Count == 0)
+                return code;
+
+            // Возвращаем текст всех statements внутри метода
+            var start = methodBody.Statements.First().SpanStart;
+            var end   = methodBody.Statements.Last().Span.End;
+            return code.Substring(start, end - start);
+        }
+
+        private static bool LooksLikeTopLevelDeclaration(string trimmed)
+        {
+            // Проверяем несколько распространённых шаблонов начала class/namespace
+            // (с возможными модификаторами доступа).
+            foreach (var kw in new[] { "class ", "namespace ", "public class", "internal class",
+                                        "private class", "static class", "public static class",
+                                        "internal static class" })
+            {
+                if (trimmed.StartsWith(kw, StringComparison.Ordinal))
+                    return true;
+            }
+            return false;
+        }
 
         /// <summary>Строка:колонка относительно исходного кода пользователя (без служебной обёртки).</summary>
         private static string FormatUserLocation(SyntaxTree tree, TextSpan span)

@@ -1,3 +1,4 @@
+using CustomVisualScripting.Editor.Classes;
 using CustomVisualScripting.Editor.Methods;
 using CustomVisualScripting.Editor.Nodes.Base;
 using CustomVisualScripting.Editor.Nodes.Comparison;
@@ -82,6 +83,8 @@ namespace CustomVisualScripting.Editor
                 }
                 case NodeType.MethodParam:  return new MethodParamNode();
                 case NodeType.ReturnValue:  return new ReturnNode();
+                case NodeType.ClassNode:    return new ClassNode();
+                case NodeType.MethodOwner:  return new MethodOwnerNode();
                 default: return null;
             }
         }

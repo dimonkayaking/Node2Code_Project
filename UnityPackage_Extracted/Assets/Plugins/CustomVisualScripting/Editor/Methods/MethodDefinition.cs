@@ -17,6 +17,10 @@ namespace CustomVisualScripting.Editor.Methods
         public string Id;
         public string Name;
         public string ReturnType = "void"; // "void" | "int" | "float" | "bool" | "string"
+
+        /// <summary>Id класса-владельца. Пустая строка — метод не привязан к классу (legacy).</summary>
+        public string ClassId = "";
+
         public List<ParameterDefinition> Parameters = new();
         public GraphData ParamGraph = new();
         public GraphData BodyGraph  = new();
