@@ -191,8 +191,10 @@ namespace VisualScripting.Core.Generators
         {
             var sb = new StringBuilder();
             
-            var variables = _graph.Nodes.Where(n => !string.IsNullOrEmpty(n.VariableName)).OrderBy(n => n.Id).ToList();
-            
+            var variables = _graph.Nodes
+                .Where(n => !string.IsNullOrEmpty(n.VariableName) && IsVariableDeclarationCandidate(n))
+                .OrderBy(n => n.Id).ToList();
+
             foreach (var node in variables)
             {
                 if (IsPlaceholderVariableRefLiteral(node))
@@ -223,8 +225,35 @@ namespace VisualScripting.Core.Generators
                 sb.AppendLine($"{type} {node.VariableName} = {valueExpr};");
                 DeclareInCurrentScope(node.VariableName);
             }
-            
+
             return sb.ToString().TrimEnd();
+        }
+
+        /// <summary>
+        /// Можно ли эмитить ноду как объявление переменной «тип имя = значение».
+        /// Структурные (ClassNode/MethodOwner), параметры, вызовы, return и flow-ноды
+        /// имеют непустой VariableName (имя класса/метода/параметра), но переменными
+        /// НЕ являются — их нельзя выводить как «int MyClass = 0;».
+        /// </summary>
+        private static bool IsVariableDeclarationCandidate(NodeData n)
+        {
+            switch (n.Type)
+            {
+                case NodeType.ClassNode:
+                case NodeType.MethodOwner:
+                case NodeType.MethodParam:
+                case NodeType.MethodCall:
+                case NodeType.ReturnValue:
+                case NodeType.FlowIf:
+                case NodeType.FlowElse:
+                case NodeType.FlowFor:
+                case NodeType.FlowWhile:
+                case NodeType.ConsoleWriteLine:
+                case NodeType.DebugLog:
+                    return false;
+                default:
+                    return true;
+            }
         }
 
         private void EmitChain(string nodeId, StringBuilder sb, int indent)
@@ -267,6 +296,12 @@ namespace VisualScripting.Core.Generators
 
                 case NodeType.MethodParam:
                     // Param-ноды — объявления параметров, а не операторы; пропускаем.
+                    break;
+
+                case NodeType.ClassNode:
+                case NodeType.MethodOwner:
+                    // Структурные ноды (класс / владелец метода) — не операторы и не
+                    // переменные; пропускаем, цепочка исполнения продолжается дальше.
                     break;
 
                 case NodeType.ReturnValue:
