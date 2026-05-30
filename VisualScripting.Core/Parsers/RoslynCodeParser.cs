@@ -28,6 +28,15 @@ namespace VisualScripting.Core.Parsers
         private GraphData _graph = null!;
         private List<string> _errors = null!;
 
+        // Смещение по строкам для кода, извлечённого из class-обёртки (StripClassWrapper).
+        // Нужно, чтобы FormatUserLocation показывал позиции относительно исходного файла (п.4).
+        private int _userCodeLineOffset;
+
+        // Лимит глубины рекурсии VisitExpression — защита от StackOverflow на
+        // патологически глубоко вложенных выражениях (п.7).
+        private int _expressionDepth;
+        private const int MaxExpressionDepth = 200;
+
         // Таблицы символов и типов переменных на стеке областей видимости.
         // Top стека — самая внутренняя область. Позволяет корректно объявлять
         // одно и то же имя в разных if/for/while-блоках без ложных ошибок
@@ -104,6 +113,25 @@ namespace VisualScripting.Core.Parsers
         private readonly Stack<Dictionary<string, string>?> _varRefStack = new Stack<Dictionary<string, string>?>();
         private Dictionary<string, string>? _subGraphVarRefs;
 
+        // ── Семантика (п.1) ───────────────────────────────────────────────────────
+        // Семантическая модель строится по обёрнутому дереву и используется ТОЛЬКО как
+        // помощник вывода типов (var/double/long/… → корректный поддерживаемый тип).
+        // НЕ источник ошибок: passthrough незнакомых API (Mathf.Sqrt, Mathf.PI и т.п.)
+        // сознательно сохраняется. Любой сбой построения модели → молчаливый фолбэк
+        // на прежнее строковое сопоставление типов.
+        private SemanticModel? _semanticModel;
+
+        /// <summary>
+        /// Жёсткая семантическая валидация. По умолчанию ВЫКЛ — поведение и набор
+        /// диагностик не меняются. При включении к ошибкам добавляются семантические
+        /// (несовместимость типов и т.п.), но НЕ те, на которых держится passthrough
+        /// (отсутствующие имена/члены/типы — CS0103/CS0117/CS0234/CS0246/CS1061).
+        /// </summary>
+        public bool StrictSemantics { get; set; }
+
+        // Ссылки на сборки кэшируются: построение MetadataReference дороже самой модели.
+        private static MetadataReference[]? _cachedReferences;
+
         public ParseResult Parse(string code)
         {
             _nodeCounter = 0;
@@ -117,6 +145,9 @@ namespace VisualScripting.Core.Parsers
             _graphStack.Clear();
             _varRefStack.Clear();
             _subGraphVarRefs = null;
+            _semanticModel = null;
+            _userCodeLineOffset = 0;
+            _expressionDepth = 0;
 
             if (string.IsNullOrWhiteSpace(code))
             {
@@ -143,6 +174,19 @@ namespace VisualScripting.Core.Parsers
             if (_errors.Count > 0)
                 return Result();
 
+            // ── Семантическая модель (п.1) ────────────────────────────────────────
+            // Строим только для синтаксически корректного кода. Используется как
+            // помощник вывода типов; при сбое — молчаливый фолбэк (null).
+            BuildSemanticModel(tree);
+
+            // Жёсткая валидация (опционально, по умолчанию ВЫКЛ).
+            if (StrictSemantics)
+            {
+                CollectSemanticErrors(tree);
+                if (_errors.Count > 0)
+                    return Result();
+            }
+
             var root = tree.GetCompilationUnitRoot();
             var method = root.DescendantNodes()
                 .OfType<MethodDeclarationSyntax>()
@@ -167,17 +211,18 @@ namespace VisualScripting.Core.Parsers
         /// Иначе возвращает исходный код без изменений.
         /// Это позволяет парсить полные файлы вида <c>class Program { static void Main() { ... } }</c>.
         /// </summary>
-        private static string StripClassWrapper(string code)
+        private string StripClassWrapper(string code)
         {
-            var trimmed = code.TrimStart();
-            // Быстрая эвристика: есть ли top-level class/namespace?
-            if (!LooksLikeTopLevelDeclaration(trimmed))
-                return code;
-
-            // Парсим без обёртки, ищем тело метода Main
+            // Парсим без обёртки и проверяем наличие top-level объявления типа/namespace
+            // по дереву (надёжнее, чем сопоставление префикса строки): ловит
+            // sealed/abstract/partial class, record, struct, enum, атрибуты, ведущие
+            // комментарии и т.п. (п.5).
             var rawTree = CSharpSyntaxTree.ParseText(
                 code, new CSharpParseOptions(LanguageVersion.Latest));
             var rawRoot = rawTree.GetCompilationUnitRoot();
+
+            if (!HasTopLevelTypeDeclaration(rawRoot))
+                return code;
 
             // Сначала пробуем метод с именем Main, затем любой первый метод
             var methodBody = rawRoot.DescendantNodes()
@@ -192,37 +237,208 @@ namespace VisualScripting.Core.Parsers
             if (methodBody == null || methodBody.Statements.Count == 0)
                 return code;
 
-            // Возвращаем текст всех statements внутри метода
+            // Возвращаем текст всех statements внутри метода и запоминаем, на сколько
+            // строк исходного файла смещён извлечённый фрагмент — чтобы диагностики
+            // показывали позиции относительно оригинала, а не обрезка (п.4).
             var start = methodBody.Statements.First().SpanStart;
             var end   = methodBody.Statements.Last().Span.End;
+            _userCodeLineOffset = rawTree.GetLineSpan(new TextSpan(start, 0)).StartLinePosition.Line;
             return code.Substring(start, end - start);
         }
 
-        private static bool LooksLikeTopLevelDeclaration(string trimmed)
+        /// <summary>Есть ли в компиляционной единице top-level объявление типа или namespace.</summary>
+        private static bool HasTopLevelTypeDeclaration(CompilationUnitSyntax root)
         {
-            // Проверяем несколько распространённых шаблонов начала class/namespace
-            // (с возможными модификаторами доступа).
-            foreach (var kw in new[] { "class ", "namespace ", "public class", "internal class",
-                                        "private class", "static class", "public static class",
-                                        "internal static class" })
+            foreach (var member in root.Members)
             {
-                if (trimmed.StartsWith(kw, StringComparison.Ordinal))
+                if (member is BaseTypeDeclarationSyntax or NamespaceDeclarationSyntax)
                     return true;
             }
             return false;
         }
 
         /// <summary>Строка:колонка относительно исходного кода пользователя (без служебной обёртки).</summary>
-        private static string FormatUserLocation(SyntaxTree tree, TextSpan span)
+        private string FormatUserLocation(SyntaxTree tree, TextSpan span)
         {
             var pos = tree.GetLineSpan(span);
             var line1 = pos.StartLinePosition.Line + 1;
             var col1 = pos.StartLinePosition.Character + 1;
-            var userLine = line1 - WrapperNewlinesBeforeUser;
+            // Вычитаем строки служебной обёртки и прибавляем смещение фрагмента,
+            // извлечённого из class-обёртки (0, если код не оборачивался).
+            var userLine = line1 - WrapperNewlinesBeforeUser + _userCodeLineOffset;
             if (userLine < 1)
                 return $"{line1}:{col1} (служебная обёртка)";
             return $"{userLine}:{col1}";
         }
+
+        // ── Семантика: построение модели и вывод типов (п.1) ──────────────────────
+
+        /// <summary>Строит <see cref="SemanticModel"/> по обёрнутому дереву. Любой сбой → null.</summary>
+        private void BuildSemanticModel(SyntaxTree tree)
+        {
+            try
+            {
+                var compilation = CSharpCompilation.Create(
+                    "VsParseSemantic",
+                    new[] { tree },
+                    GetMetadataReferences(),
+                    new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+                _semanticModel = compilation.GetSemanticModel(tree, ignoreAccessibility: true);
+            }
+            catch
+            {
+                _semanticModel = null;
+            }
+        }
+
+        /// <summary>
+        /// Минимальный набор ссылок для разрешения базовых типов (corelib достаточно
+        /// для SpecialType и числовых литералов). Кэшируется. Под Unity/IL2CPP, где
+        /// <c>Assembly.Location</c> может быть пустым, список окажется пустым —
+        /// тогда вывод типов просто не активируется (фолбэк на строковое сопоставление).
+        /// </summary>
+        private static MetadataReference[] GetMetadataReferences()
+        {
+            if (_cachedReferences != null)
+                return _cachedReferences;
+
+            var list = new List<MetadataReference>();
+            void TryAdd(System.Reflection.Assembly asm)
+            {
+                try
+                {
+                    var loc = asm.Location;
+                    if (!string.IsNullOrEmpty(loc))
+                        list.Add(MetadataReference.CreateFromFile(loc));
+                }
+                catch { /* ignore */ }
+            }
+
+            TryAdd(typeof(object).Assembly);
+            try
+            {
+                if (AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") is string tpa && !string.IsNullOrEmpty(tpa))
+                {
+                    foreach (var path in tpa.Split(System.IO.Path.PathSeparator))
+                    {
+                        if (path.EndsWith("System.Runtime.dll", StringComparison.OrdinalIgnoreCase) ||
+                            path.EndsWith("System.Private.CoreLib.dll", StringComparison.OrdinalIgnoreCase))
+                        {
+                            try { list.Add(MetadataReference.CreateFromFile(path)); } catch { /* ignore */ }
+                        }
+                    }
+                }
+            }
+            catch { /* ignore */ }
+
+            _cachedReferences = list.ToArray();
+            return _cachedReferences;
+        }
+
+        /// <summary>
+        /// Сопоставляет объявленный тип переменной с поддерживаемым (int/float/bool/string).
+        /// Для явных int/float/bool/string — быстрый путь без семантики (поведение не меняется).
+        /// Для <c>var</c> и неподдерживаемых алиасов (double/long/uint/byte/…) пытается вывести
+        /// тип через <see cref="SemanticModel"/>; при неудаче — прежнее правило (всё прочее → int).
+        /// </summary>
+        private string MapDeclaredType(TypeSyntax typeSyntax, ExpressionSyntax? initializer, string typeStr)
+        {
+            switch (typeStr)
+            {
+                case "int":
+                case "float":
+                case "bool":
+                case "string":
+                    return typeStr;
+            }
+
+            var inferred = TryInferSupportedType(typeStr == "var" ? (SyntaxNode?)initializer : typeSyntax);
+            if (inferred != null)
+                return inferred;
+
+            return typeStr switch
+            {
+                "float" => "float",
+                "bool" => "bool",
+                "string" => "string",
+                _ => "int"
+            };
+        }
+
+        /// <summary>Выводит поддерживаемый тип из семантической модели; null, если невозможно.</summary>
+        private string? TryInferSupportedType(SyntaxNode? node)
+        {
+            if (node == null || _semanticModel == null)
+                return null;
+
+            try
+            {
+                // TypeSyntax наследует ExpressionSyntax, поэтому явный тип резолвим
+                // отдельно (GetTypeInfo, при пустом — GetSymbolInfo), а инициализатор —
+                // через GetTypeInfo как обычное выражение.
+                ITypeSymbol? t;
+                if (node is TypeSyntax ts)
+                {
+                    t = _semanticModel.GetTypeInfo(ts).Type
+                        ?? _semanticModel.GetSymbolInfo(ts).Symbol as ITypeSymbol;
+                }
+                else if (node is ExpressionSyntax e)
+                {
+                    t = _semanticModel.GetTypeInfo(e).Type;
+                }
+                else
+                {
+                    return null;
+                }
+
+                if (t == null || t.TypeKind == TypeKind.Error)
+                    return null;
+
+                return t.SpecialType switch
+                {
+                    SpecialType.System_Single or SpecialType.System_Double or SpecialType.System_Decimal => "float",
+                    SpecialType.System_Boolean => "bool",
+                    SpecialType.System_String or SpecialType.System_Char => "string",
+                    SpecialType.System_SByte or SpecialType.System_Byte
+                        or SpecialType.System_Int16 or SpecialType.System_UInt16
+                        or SpecialType.System_Int32 or SpecialType.System_UInt32
+                        or SpecialType.System_Int64 or SpecialType.System_UInt64 => "int",
+                    _ => null
+                };
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// При <see cref="StrictSemantics"/> добавляет семантические ошибки, КРОМЕ тех,
+        /// на которых держится passthrough (отсутствующие имена/члены/типы).
+        /// </summary>
+        private void CollectSemanticErrors(SyntaxTree tree)
+        {
+            if (_semanticModel == null)
+                return;
+
+            try
+            {
+                foreach (var d in _semanticModel.Compilation.GetDiagnostics()
+                             .Where(x => x.Severity == DiagnosticSeverity.Error && !IsPassthroughDiagnostic(x.Id)))
+                {
+                    _errors.Add($"{d.GetMessage()} ({FormatUserLocation(tree, d.Location.SourceSpan)})");
+                }
+            }
+            catch { /* ignore */ }
+        }
+
+        /// <summary>Коды диагностик, которые намеренно игнорируются ради passthrough незнакомых API.</summary>
+        private static bool IsPassthroughDiagnostic(string id) =>
+            id is "CS0103"   // имя не существует в текущем контексте
+                or "CS0117"  // тип не содержит определения члена
+                or "CS0234"  // нет члена в пространстве имён
+                or "CS0246"  // тип/namespace не найден
+                or "CS1061"; // нет определения/метода расширения
 
         private void VisitMethodBody(BlockSyntax body)
         {
@@ -343,13 +559,7 @@ namespace VisualScripting.Core.Parsers
                 }
 
                 var typeStr = local.Declaration.Type.ToString().Trim();
-                var vType = typeStr switch
-                {
-                    "float" => "float",
-                    "bool" => "bool",
-                    "string" => "string",
-                    _ => "int"
-                };
+                var vType = MapDeclaredType(local.Declaration.Type, v.Initializer?.Value, typeStr);
                 _typeScopes.Peek()[name] = vType;
 
                 if (v.Initializer == null)
@@ -794,13 +1004,7 @@ namespace VisualScripting.Core.Parsers
                     }
 
                     var typeStr = forStmt.Declaration.Type.ToString().Trim();
-                    var vType0 = typeStr switch
-                    {
-                        "float" => "float",
-                        "bool" => "bool",
-                        "string" => "string",
-                        _ => "int"
-                    };
+                    var vType0 = MapDeclaredType(forStmt.Declaration.Type, v.Initializer?.Value, typeStr);
                     _typeScopes.Peek()[name] = vType0;
 
                     if (v.Initializer == null)
@@ -1174,9 +1378,14 @@ namespace VisualScripting.Core.Parsers
         }
 
         /// <summary>Ищет ноду по id в корневом графе и во всех вложенных подграфах (условие, тело, for-init и т.д.).</summary>
-        private static NodeData? FindNodeByIdInTree(GraphData? graph, string nodeId)
+        private static NodeData? FindNodeByIdInTree(GraphData? graph, string nodeId) =>
+            FindNodeByIdInTree(graph, nodeId, new HashSet<GraphData>());
+
+        private static NodeData? FindNodeByIdInTree(GraphData? graph, string nodeId, HashSet<GraphData> visited)
         {
-            if (graph == null || string.IsNullOrEmpty(nodeId))
+            // visited.Add по ссылочному равенству: если граф пришёл извне с циклом
+            // (подграф ссылается на уже посещённый), рекурсия не уйдёт в бесконечность (п.7).
+            if (graph == null || string.IsNullOrEmpty(nodeId) || !visited.Add(graph))
                 return null;
 
             foreach (var n in graph.Nodes)
@@ -1187,10 +1396,10 @@ namespace VisualScripting.Core.Parsers
 
             foreach (var n in graph.Nodes)
             {
-                var found = FindNodeByIdInTree(n.ConditionSubGraph, nodeId)
-                            ?? FindNodeByIdInTree(n.BodySubGraph, nodeId)
-                            ?? FindNodeByIdInTree(n.InitSubGraph, nodeId)
-                            ?? FindNodeByIdInTree(n.IncrementSubGraph, nodeId);
+                var found = FindNodeByIdInTree(n.ConditionSubGraph, nodeId, visited)
+                            ?? FindNodeByIdInTree(n.BodySubGraph, nodeId, visited)
+                            ?? FindNodeByIdInTree(n.InitSubGraph, nodeId, visited)
+                            ?? FindNodeByIdInTree(n.IncrementSubGraph, nodeId, visited);
                 if (found != null)
                     return found;
             }
@@ -1205,90 +1414,23 @@ namespace VisualScripting.Core.Parsers
             return new List<StatementSyntax> { statement };
         }
 
-        private void ProcessBlockStatements(
-            IReadOnlyList<StatementSyntax> statements,
-            string entryFromNodeId,
-            string entryFromPort)
-        {
-            string? prevId = null;
-            var prevPort = "execOut";
-            var first = true;
-
-            foreach (var st in statements)
-            {
-                if (st is IfStatementSyntax nestedIf)
-                {
-                    var ifHost = first
-                        ? VisitIfChain(nestedIf, entryFromNodeId, entryFromPort)
-                        : VisitIfChain(nestedIf, prevId, prevPort);
-
-                    first = false;
-                    if (ifHost != null)
-                    {
-                        prevId = ifHost.NodeId;
-                        prevPort = ifHost.ExecOutPort;
-                    }
-                    else
-                    {
-                        prevId = null;
-                        prevPort = "execOut";
-                    }
-                    continue;
-                }
-
-                if (st is ForStatementSyntax nestedFor)
-                {
-                    var fh = first
-                        ? VisitForStatement(nestedFor, entryFromNodeId, entryFromPort)
-                        : VisitForStatement(nestedFor, prevId, prevPort);
-                    first = false;
-                    if (fh != null)
-                    {
-                        prevId = fh.NodeId;
-                        prevPort = fh.ExecOutPort;
-                    }
-                    else
-                    {
-                        prevId = null;
-                        prevPort = "execOut";
-                    }
-
-                    continue;
-                }
-
-                if (st is WhileStatementSyntax nestedWhile)
-                {
-                    var wh = first
-                        ? VisitWhileStatement(nestedWhile, entryFromNodeId, entryFromPort)
-                        : VisitWhileStatement(nestedWhile, prevId, prevPort);
-                    first = false;
-                    if (wh != null)
-                    {
-                        prevId = wh.NodeId;
-                        prevPort = wh.ExecOutPort;
-                    }
-                    else
-                    {
-                        prevId = null;
-                        prevPort = "execOut";
-                    }
-
-                    continue;
-                }
-
-                var host = VisitStatementForFlow(st, first ? entryFromNodeId : prevId, first ? entryFromPort : prevPort);
-                first = false;
-                if (host != null)
-                {
-                    prevId = host.NodeId;
-                    prevPort = host.ExecOutPort;
-                }
-            }
-        }
+        // Мёртвый ProcessBlockStatements удалён: всю работу выполняет BuildStatementsInSubGraph.
 
         private string? VisitExpression(ExpressionSyntax expr, bool isRoot, string? assignVariableToRoot, out bool unsupported)
         {
             unsupported = false;
+
+            if (++_expressionDepth > MaxExpressionDepth)
+            {
+                _expressionDepth--;
+                unsupported = true;
+                _errors.Add(
+                    $"Слишком глубоко вложенное выражение ({FormatUserLocation(expr.SyntaxTree, expr.Span)}).");
+                return null;
+            }
+
+            try
+            {
             while (expr is ParenthesizedExpressionSyntax paren)
                 expr = paren.Expression;
 
@@ -1346,6 +1488,11 @@ namespace VisualScripting.Core.Parsers
                     _errors.Add(
                         $"Неподдерживаемое выражение ({FormatUserLocation(expr.SyntaxTree, expr.Span)}): {expr.Kind()}.");
                     return null;
+            }
+            }
+            finally
+            {
+                _expressionDepth--;
             }
         }
 
@@ -1429,13 +1576,18 @@ namespace VisualScripting.Core.Parsers
 
             if (int.TryParse(leftVal, out int li) && int.TryParse(rightVal, out int ri))
             {
+                // Деление/остаток на ноль НЕ сворачиваем: возвращаем null, чтобы сохранить
+                // исходное выражение, а не подменять его тихим «0» (п.7).
+                if ((node.Type == NodeType.MathDivide || node.Type == NodeType.MathModulo) && ri == 0)
+                    return null;
+
                 int result = node.Type switch
                 {
                     NodeType.MathAdd => li + ri,
                     NodeType.MathSubtract => li - ri,
                     NodeType.MathMultiply => li * ri,
-                    NodeType.MathDivide when ri != 0 => li / ri,
-                    NodeType.MathModulo when ri != 0 => li % ri,
+                    NodeType.MathDivide => li / ri,
+                    NodeType.MathModulo => li % ri,
                     _ => 0
                 };
                 return result.ToString();
@@ -1654,9 +1806,12 @@ namespace VisualScripting.Core.Parsers
 
         private string CreateZeroLiteralMatchingOperand(string operandNodeId)
         {
-            var n = _graph.Nodes.First(x => x.Id == operandNodeId);
-            var useFloat = n.Type == NodeType.LiteralFloat ||
-                           string.Equals(n.ValueType, "float", StringComparison.OrdinalIgnoreCase);
+            // FirstOrDefault + guard: операнд может лежать в другом графе (подграф vs
+            // текущий _graph), тогда First бросил бы InvalidOperationException (п.7).
+            var n = _graph.Nodes.FirstOrDefault(x => x.Id == operandNodeId);
+            var useFloat = n != null &&
+                           (n.Type == NodeType.LiteralFloat ||
+                            string.Equals(n.ValueType, "float", StringComparison.OrdinalIgnoreCase));
             var id = NewId();
             _graph.Nodes.Add(new NodeData
             {

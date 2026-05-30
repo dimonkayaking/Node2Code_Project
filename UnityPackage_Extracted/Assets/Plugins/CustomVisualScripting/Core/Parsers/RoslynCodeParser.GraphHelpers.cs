@@ -80,10 +80,14 @@ namespace VisualScripting.Core.Parsers
 
         private string NewId() => $"node_{_nodeCounter++}";
 
+        // Ограничение глубины обхода подграфов — защита от переполнения стека, если граф,
+        // пришедший извне, содержит цикл (нода ссылается на подграф, содержащий саму ноду).
+        private const int MaxSubGraphDepth = 256;
+
         /// <summary>Ищет ноду по id в корневом графе и во всех вложенных подграфах (условие, тело, for-init и т.д.).</summary>
-        private static NodeData FindNodeByIdInTree(GraphData graph, string nodeId)
+        private static NodeData FindNodeByIdInTree(GraphData graph, string nodeId, int depth = 0)
         {
-            if (graph == null || string.IsNullOrEmpty(nodeId))
+            if (graph == null || string.IsNullOrEmpty(nodeId) || depth > MaxSubGraphDepth)
                 return null;
 
             foreach (var n in graph.Nodes)
@@ -94,10 +98,10 @@ namespace VisualScripting.Core.Parsers
 
             foreach (var n in graph.Nodes)
             {
-                var found = FindNodeByIdInTree(n.ConditionSubGraph, nodeId)
-                            ?? FindNodeByIdInTree(n.BodySubGraph, nodeId)
-                            ?? FindNodeByIdInTree(n.InitSubGraph, nodeId)
-                            ?? FindNodeByIdInTree(n.IncrementSubGraph, nodeId);
+                var found = FindNodeByIdInTree(n.ConditionSubGraph, nodeId, depth + 1)
+                            ?? FindNodeByIdInTree(n.BodySubGraph, nodeId, depth + 1)
+                            ?? FindNodeByIdInTree(n.InitSubGraph, nodeId, depth + 1)
+                            ?? FindNodeByIdInTree(n.IncrementSubGraph, nodeId, depth + 1);
                 if (found != null)
                     return found;
             }
