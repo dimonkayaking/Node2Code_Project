@@ -11,7 +11,7 @@ namespace CustomVisualScripting.Editor.Nodes.Methods
     /// data-in порт «value» (подключается возвращаемое выражение).
     /// Не имеет exec-out: завершает ветку выполнения.
     /// </summary>
-    [Serializable, NodeMenuItem("Method/Return")]
+    [Serializable, NodeMenuItem("Flow/Return")]
     public class ReturnNode : BaseFlowNode
     {
         public override NodeType NodeType => NodeType.ReturnValue;

@@ -39,6 +39,12 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         {
             ReplaceBaseGraphViewUndoHandlerWithNullSafeWrapper();
 
+            // GraphProcessor добавляет собственные пункты (Align, Open Node Script, Lock…) и
+            // все ноды без нашей фильтрации через отдельный ContextualMenuPopulateEvent-callback
+            // (не через виртуальный BuildContextualMenu). Bubble-phase callback, зарегистрированный
+            // последним, очищает меню и пересобирает его из нашего отфильтрованного списка.
+            this.RegisterCallback<ContextualMenuPopulateEvent>(RebuildCleanContextMenu);
+
             var previousGraphViewChanged = graphViewChanged;
             graphViewChanged = change =>
             {
@@ -167,8 +173,26 @@ namespace CustomVisualScripting.Editor.Nodes.Views
                 if (!ShouldHideMenuPath(entry.path)) yield return entry;
         }
 
-        public override void BuildContextualMenu(ContextualMenuPopulateEvent evt)
+        /// <summary>
+        /// Intentionally empty — menu population is handled by <see cref="RebuildCleanContextMenu"/>
+        /// which runs in bubble phase after all base-class handlers and rebuilds the menu cleanly.
+        /// </summary>
+        public override void BuildContextualMenu(ContextualMenuPopulateEvent evt) { }
+
+        /// <summary>
+        /// Bubble-phase callback. Runs after GraphProcessor's own ContextualMenuPopulateEvent handlers,
+        /// clears whatever they added, and populates the menu with only our filtered node entries.
+        /// </summary>
+        private void RebuildCleanContextMenu(ContextualMenuPopulateEvent evt)
         {
+            evt.menu.MenuItems().Clear();
+
+            if (graph == null) return;
+
+            // evt.mousePosition — мировые (экранные) координаты.
+            // Преобразуем в пространство contentViewContainer (учитывает pan/zoom).
+            Vector2 mouseGraphPos = contentViewContainer.WorldToLocal(evt.mousePosition);
+
             var grouped = new Dictionary<string, List<(string fullPath, Type type)>>();
             foreach (var entry in NodeProvider.GetNodeMenuEntries(graph))
             {
@@ -179,21 +203,15 @@ namespace CustomVisualScripting.Editor.Nodes.Views
                 grouped[category].Add((entry.path, entry.type));
             }
 
-            // evt.localMousePosition — координаты в пространстве элемента GraphView
-            // (не учитывает pan/zoom). Правильное преобразование:
-            // мировые (экранные) координаты → пространство contentViewContainer,
-            // который уже содержит трансформ сдвига и масштаба графа.
-            Vector2 mouseGraphPos = contentViewContainer.WorldToLocal(evt.mousePosition);
-
             foreach (var kv in grouped.OrderBy(g => g.Key))
             {
-                string category    = kv.Key;
-                string categoryRu  = TranslateCategory(category);
+                string category   = kv.Key;
+                string categoryRu = TranslateCategory(category);
                 foreach (var node in kv.Value.OrderBy(n => n.fullPath))
                 {
                     string nodeName = node.fullPath.Split('/').Last();
-                    Type nodeType = node.type;
-                    evt.menu.AppendAction($"{categoryRu}/{nodeName}", action =>
+                    Type   nodeType = node.type;
+                    evt.menu.AppendAction($"{categoryRu}/{nodeName}", _ =>
                     {
                         CreateNodeAtPosition(nodeType, mouseGraphPos);
                     });

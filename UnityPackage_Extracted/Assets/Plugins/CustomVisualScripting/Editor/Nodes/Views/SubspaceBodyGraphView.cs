@@ -16,7 +16,7 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         {
             if (string.IsNullOrEmpty(path)) return false;
 
-            if (path == "Method/Return") return false;
+            // Method/* полностью скрыт — Return переехал в Flow/Return
             if (path.StartsWith("Method/") || path == "Method") return true;
 
             return path.StartsWith("Utils/") || path.StartsWith("Unity/") ||

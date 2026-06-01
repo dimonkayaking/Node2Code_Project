@@ -13,6 +13,7 @@ using UnityEngine;
 using UnityEngine.UIElements;
 using VisualScripting.Core.Models;
 using CustomVisualScripting.Editor;
+using CustomVisualScripting.Editor.Methods;
 
 namespace CustomVisualScripting.Editor.Windows
 {
@@ -369,8 +370,31 @@ namespace CustomVisualScripting.Editor.Windows
 
         private NodeData FindNodeDataDeep(string nodeId)
         {
-            if (_currentGraph?.LogicGraph == null) return null;
-            return SearchGraphDeep(_currentGraph.LogicGraph, nodeId);
+            if (string.IsNullOrEmpty(nodeId)) return null;
+
+            // 1. Главный граф (ClassNode-ноды, корневой уровень)
+            if (_currentGraph?.LogicGraph != null)
+            {
+                var found = SearchGraphDeep(_currentGraph.LogicGraph, nodeId);
+                if (found != null) return found;
+            }
+
+            // 2. Тела и параметры всех зарегистрированных методов (if/while/for живут здесь)
+            foreach (var method in MethodRegistry.Methods)
+            {
+                if (method.BodyGraph != null)
+                {
+                    var found = SearchGraphDeep(method.BodyGraph, nodeId);
+                    if (found != null) return found;
+                }
+                if (method.ParamGraph != null)
+                {
+                    var found = SearchGraphDeep(method.ParamGraph, nodeId);
+                    if (found != null) return found;
+                }
+            }
+
+            return null;
         }
 
         private static NodeData SearchGraphDeep(GraphData graph, string nodeId)
@@ -417,13 +441,22 @@ namespace CustomVisualScripting.Editor.Windows
             var nodeData = FindNodeDataDeep(nodeId);
             if (nodeData != null) return nodeData;
 
-            if (_graphView != null && _internalGraph != null)
+            // Синхронизируем активную вкладку, чтобы несохранённые изменения попали в модель
+            if (string.Equals(_activeTabId, FileTabId, StringComparison.Ordinal))
             {
-                SyncFullGraphFromView();
-                return FindNodeDataDeep(nodeId);
+                if (_graphView != null && _internalGraph != null)
+                    SyncFullGraphFromView();
+            }
+            else if (_methodTabRuntimes.TryGetValue(_activeTabId, out var methodRuntime))
+            {
+                SyncMethodRuntime(methodRuntime);
+            }
+            else if (_subspaceRuntimes.TryGetValue(_activeTabId, out var subspaceRuntime))
+            {
+                SyncSubspaceRuntime(subspaceRuntime);
             }
 
-            return null;
+            return FindNodeDataDeep(nodeId);
         }
 
         private static GraphData GetSubGraphRef(NodeData nodeData, SubspaceKind subspaceKind)

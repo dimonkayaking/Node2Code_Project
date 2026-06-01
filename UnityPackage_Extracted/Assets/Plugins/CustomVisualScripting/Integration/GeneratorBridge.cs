@@ -56,10 +56,10 @@ namespace CustomVisualScripting.Integration
                 // Статические поля
                 foreach (var field in cls.Fields ?? Enumerable.Empty<ClassFieldData>())
                 {
-                    var defaultVal = GetDefaultForType(field.Type);
                     if (!string.IsNullOrWhiteSpace(field.DefaultValue))
-                        defaultVal = field.DefaultValue;
-                    sb.AppendLine($"    public static {field.Type} {field.Name} = {defaultVal};");
+                        sb.AppendLine($"    public static {field.Type} {field.Name} = {field.DefaultValue};");
+                    else
+                        sb.AppendLine($"    public static {field.Type} {field.Name};");
                 }
                 if (cls.Fields?.Count > 0) sb.AppendLine();
 

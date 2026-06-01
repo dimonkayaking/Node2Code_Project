@@ -707,6 +707,7 @@ namespace CustomVisualScripting.Editor.Nodes.Views
                 case NodeType.FlowElse:
                 case NodeType.FlowFor:
                 case NodeType.FlowWhile:
+                case NodeType.ReturnValue:
                     return Hex("#F44336");
 
                 // Ввод/Вывод
