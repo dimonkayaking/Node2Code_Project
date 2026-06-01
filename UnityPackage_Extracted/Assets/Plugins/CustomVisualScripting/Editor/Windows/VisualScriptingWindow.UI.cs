@@ -16,6 +16,8 @@ using CustomVisualScripting.Windows.Views;
 using VisualScripting.Core.Models;
 using CustomToolbar = CustomVisualScripting.Windows.Views.ToolbarView;
 using CustomVisualScripting.Editor;
+using CustomVisualScripting.Editor.Classes;
+using CustomVisualScripting.Editor.Methods;
 
 namespace CustomVisualScripting.Editor.Windows
 {
@@ -343,6 +345,11 @@ namespace CustomVisualScripting.Editor.Windows
             }).ExecuteLater(1);
         }
 
+        // Цвет класса — совпадает с ClassColor в NodeToolbarView и кнопкой «Классы» в правой панели.
+        private static readonly Color ClassNameHighlightColor  = new Color(0x4C / 255f, 0xAF / 255f, 0x50 / 255f); // #4CAF50
+        // Цвет метода — совпадает с MethodColor в NodeToolbarView и кнопкой «Методы» в правой панели.
+        private static readonly Color MethodNameHighlightColor = new Color(0x00 / 255f, 0xBC / 255f, 0xD4 / 255f); // #00BCD4
+
         internal void UpdateCodeEditorSyntaxColors()
         {
             if (_codeEditor == null) return;
@@ -370,6 +377,20 @@ namespace CustomVisualScripting.Editor.Windows
                     if (colors.ContainsKey(nodeData.VariableName)) continue;
                     colors[nodeData.VariableName] = NodeViewBoundsUtils.GetNodeTypeOutlineColor(nodeData.Type);
                 }
+            }
+
+            // Имена классов — зелёный (#4CAF50), совпадает с кнопкой «Классы» в панели справа.
+            foreach (var cls in ClassRegistry.Classes)
+            {
+                if (string.IsNullOrWhiteSpace(cls.Name)) continue;
+                colors[cls.Name] = ClassNameHighlightColor;
+            }
+
+            // Имена методов — циановый (#00BCD4), совпадает с кнопкой «Методы» в панели справа.
+            foreach (var method in MethodRegistry.Methods)
+            {
+                if (string.IsNullOrWhiteSpace(method.Name)) continue;
+                colors[method.Name] = MethodNameHighlightColor;
             }
 
             _codeEditor.SetNodeVariableColors(colors);

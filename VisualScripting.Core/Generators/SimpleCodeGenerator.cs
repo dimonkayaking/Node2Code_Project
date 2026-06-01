@@ -342,7 +342,7 @@ namespace VisualScripting.Core.Generators
             if (node.Type == NodeType.MathfAbs)
             {
                 var v = SubIn("input");
-                return v != null ? $"System.Math.Abs({EmitSubExpr(v, map, graph, false)})" : "???";
+                return v != null ? $"Math.Abs({EmitSubExpr(v, map, graph, false)})" : "???";
             }
 
             if (node.Type is NodeType.MathfMax or NodeType.MathfMin)
@@ -351,7 +351,7 @@ namespace VisualScripting.Core.Generators
                 var b = SubIn("inputB");
                 if (a == null || b == null) return "???";
                 var fn = node.Type == NodeType.MathfMax ? "Max" : "Min";
-                return $"System.Math.{fn}({EmitSubExpr(a, map, graph, false)}, {EmitSubExpr(b, map, graph, false)})";
+                return $"Math.{fn}({EmitSubExpr(a, map, graph, false)}, {EmitSubExpr(b, map, graph, false)})";
             }
 
             return "???";
@@ -686,7 +686,7 @@ namespace VisualScripting.Core.Generators
             {
                 var v = Input(nodeId, "input");
                 if (v == null) return "???";
-                return $"System.Math.Abs({EmitExpr(v)})";
+                return $"Math.Abs({EmitExpr(v)})";
             }
 
             if (node.Type is NodeType.MathfMax or NodeType.MathfMin)
@@ -695,7 +695,7 @@ namespace VisualScripting.Core.Generators
                 var b = Input(nodeId, "inputB");
                 if (a == null || b == null) return "???";
                 var fn = node.Type == NodeType.MathfMax ? "Max" : "Min";
-                return $"System.Math.{fn}({EmitExpr(a)}, {EmitExpr(b)})";
+                return $"Math.{fn}({EmitExpr(a)}, {EmitExpr(b)})";
             }
 
             return "???";

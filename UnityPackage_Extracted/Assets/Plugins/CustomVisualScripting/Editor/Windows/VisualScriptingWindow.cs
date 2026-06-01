@@ -445,6 +445,8 @@ namespace CustomVisualScripting.Editor.Windows
              "System"),
             (new System.Text.RegularExpressions.Regex(@"\bMath\.", System.Text.RegularExpressions.RegexOptions.Compiled),
              "System"),
+            (new System.Text.RegularExpressions.Regex(@"\bDebug\.Log", System.Text.RegularExpressions.RegexOptions.Compiled),
+             "UnityEngine"),
             (new System.Text.RegularExpressions.Regex(@"\b(List|Dictionary|HashSet|Queue|Stack)<", System.Text.RegularExpressions.RegexOptions.Compiled),
              "System.Collections.Generic"),
             (new System.Text.RegularExpressions.Regex(@"\.(Select|Where|FirstOrDefault|OrderBy|Any|All)\(", System.Text.RegularExpressions.RegexOptions.Compiled),
@@ -467,8 +469,10 @@ namespace CustomVisualScripting.Editor.Windows
                     System.Text.RegularExpressions.RegexOptions.Multiline))
                 present.Add(m.Groups[1].Value);
 
-            // Определяем, какие using нужно добавить
-            var toAdd = new System.Collections.Generic.List<string>();
+            // Определяем, какие using нужно добавить.
+            // HashSet гарантирует отсутствие дублей, если несколько правил дают один namespace
+            // (например Console. и Math. оба требуют "System").
+            var toAdd = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
             foreach (var (pattern, ns) in UsingRules)
             {
                 if (!present.Contains(ns) && pattern.IsMatch(code))
@@ -478,7 +482,7 @@ namespace CustomVisualScripting.Editor.Windows
             if (toAdd.Count == 0) return code;
 
             var sb = new System.Text.StringBuilder();
-            foreach (var ns in toAdd)
+            foreach (var ns in toAdd.OrderBy(x => x))   // стабильный порядок
                 sb.AppendLine($"using {ns};");
             sb.AppendLine();
             sb.Append(code);
@@ -627,6 +631,9 @@ namespace CustomVisualScripting.Editor.Windows
                 if (nodeView is Nodes.Views.ClassNodeView classView)
                     classView.RefreshContent();
             }
+
+            // Имена методов могли измениться — обновляем подсветку в редакторе кода
+            UpdateCodeEditorSyntaxColors();
         }
 
         private void OnClassRegistryChanged()
@@ -669,6 +676,9 @@ namespace CustomVisualScripting.Editor.Windows
                 foreach (var runtime in _methodTabRuntimes.Values)
                     SyncBodyFieldReferences(runtime);
             }
+
+            // Имена классов могли измениться — обновляем подсветку в редакторе кода
+            UpdateCodeEditorSyntaxColors();
         }
 
         private static IEnumerable<ClassInfo> ToClassInfos(IEnumerable<ClassDefinition> defs)
