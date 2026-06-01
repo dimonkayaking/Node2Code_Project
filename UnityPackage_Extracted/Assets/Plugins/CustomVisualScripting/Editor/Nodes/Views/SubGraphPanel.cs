@@ -307,7 +307,9 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             var ownerWindow = (EditorWindow)VisualScriptingWindow.ActiveWindow
                               ?? EditorWindow.focusedWindow
                               ?? Resources.FindObjectsOfTypeAll<VisualScriptingWindow>().FirstOrDefault();
-            _graphView = new FilteredCreateMenuBaseGraphView(ownerWindow);
+            _graphView = _isConditionPanel
+                ? (FilteredCreateMenuBaseGraphView)new SubspaceExprGraphView(ownerWindow)
+                : new SubspaceBodyGraphView(ownerWindow);
             _graphView.Initialize(_internalGraph);
             _graphView.style.flexGrow = 1;
             _graphView.style.minHeight = MinPanelHeight - 10f;

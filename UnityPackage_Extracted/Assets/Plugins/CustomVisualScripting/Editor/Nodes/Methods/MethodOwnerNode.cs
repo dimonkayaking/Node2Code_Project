@@ -18,7 +18,7 @@ namespace CustomVisualScripting.Editor.Nodes.Methods
     ///   execIn  (вход)  — постоянный
     ///   execOut (выход) — постоянный
     /// </summary>
-    [Serializable, NodeMenuItem("Class/MethodOwner")]
+    [Serializable]
     public class MethodOwnerNode : BaseExecutionNode
     {
         public override NodeType NodeType => NodeType.MethodOwner;

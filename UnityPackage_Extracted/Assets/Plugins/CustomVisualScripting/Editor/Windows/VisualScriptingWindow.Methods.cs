@@ -198,8 +198,21 @@ namespace CustomVisualScripting.Editor.Windows
             runtime.ParamGraphView.style.flexGrow = 1;
             runtime.ParamGraphView.graphViewChanged += change =>
             {
+                // graphViewChanged срабатывает на удаление и рёбра, но НЕ на AddNode.
+                // Поэтому здесь обрабатываем только удаление параметров.
                 SyncMethodRuntime(runtime);
+                SyncBodyParamReferences(runtime);
                 return change;
+            };
+
+            // NodeViewAdded опрашивается каждые 16 мс и срабатывает при появлении новой ноды,
+            // чего graphViewChanged не делает при AddNode. Так добавление параметра через ПКМ
+            // немедленно отражается в теле метода.
+            runtime.ParamGraphView.NodeViewAdded += nv =>
+            {
+                if (nv?.nodeTarget is not MethodParamNode) return;
+                SyncMethodRuntime(runtime);
+                SyncBodyParamReferences(runtime);
             };
 
             if (def.ParamGraph?.Edges != null && paramNodeMap.Count > 0)
@@ -331,8 +344,12 @@ namespace CustomVisualScripting.Editor.Windows
 
             runtime.Container = splitView;
 
-            // Инжектируем ноды-ссылки на параметры в body-граф
+            // Даём param-графу знать о body-графе (для RMB → «Добавить в тело»)
+            runtime.ParamGraphView.BodyGraphView = runtime.BodyGraphView;
+
+            // Инжектируем ноды-ссылки на параметры и поля класса в body-граф
             SyncBodyParamReferences(runtime);
+            SyncBodyFieldReferences(runtime);
 
             // Периодический тикер синхронизации
             runtime.SyncTicker =
@@ -572,10 +589,11 @@ namespace CustomVisualScripting.Editor.Windows
                 var existing = MethodRegistry.GetById(mi.Id);
                 if (existing != null)
                 {
-                    // Обновляем сигнатуру; тело обновляем только если распарсили что-то непустое
                     existing.Name       = mi.Name;
                     existing.ReturnType = mi.ReturnType ?? "void";
                     existing.Parameters = BuildParamDefs(mi);
+                    if (!string.IsNullOrEmpty(mi.ClassId))
+                        existing.ClassId = mi.ClassId;
                     if (mi.BodyGraph?.Nodes?.Count > 0)
                         existing.BodyGraph = mi.BodyGraph;
                     MethodRegistry.Update(existing);
@@ -587,6 +605,7 @@ namespace CustomVisualScripting.Editor.Windows
                         Id         = mi.Id,
                         Name       = mi.Name,
                         ReturnType = mi.ReturnType ?? "void",
+                        ClassId    = mi.ClassId ?? "",
                         Parameters = BuildParamDefs(mi),
                         BodyGraph  = mi.BodyGraph ?? new GraphData(),
                         ParamGraph = new GraphData()
@@ -598,6 +617,132 @@ namespace CustomVisualScripting.Editor.Windows
 
             if (count > 0)
                 UnityEngine.Debug.Log($"[VS] Импортировано inline-методов: {count}");
+        }
+
+        // ─── Поля класса в теле метода ───────────────────────────────────────
+
+        /// <summary>
+        /// Синхронизирует ноды-ссылки на статические поля класса в body-графе метода.
+        /// Для каждого поля из <see cref="ClassDefinition.Fields"/> добавляется
+        /// <see cref="Nodes.Methods.FieldRefNode"/> со стабильным ID <c>"_fieldref_" + field.Id</c>.
+        /// Поля, которых больше нет, — удаляются.
+        /// </summary>
+        private void SyncBodyFieldReferences(MethodTabRuntime runtime)
+        {
+            if (runtime?.Definition == null) return;
+            if (runtime.BodyGraphView == null || runtime.BodyInternalGraph == null) return;
+
+            var classId = runtime.Definition.ClassId;
+            if (string.IsNullOrEmpty(classId)) return;
+
+            var classDef = Classes.ClassRegistry.GetById(classId);
+            var classFields = classDef?.Fields ?? new System.Collections.Generic.List<Classes.FieldDefinition>();
+
+            // Все FieldRefNode в body-графе — авто-инжектированные ссылки на поля.
+            var existingRefs = runtime.BodyInternalGraph.nodes
+                .OfType<Nodes.Methods.FieldRefNode>()
+                .ToList();
+
+            // existingById может иметь пустой ключ для нод, инжектированных парсером
+            // (parser не задаёт FieldId — используем "").
+            var existingById = new Dictionary<string, Nodes.Methods.FieldRefNode>(StringComparer.Ordinal);
+            foreach (var n in existingRefs)
+                existingById[n.FieldId ?? ""] = n;
+
+            var currentIds = new HashSet<string>(classFields.Select(f => f.Id), StringComparer.Ordinal);
+
+            // Для нод с пустым FieldId (инжектированных парсером) — сопоставляем по имени
+            // или по стабильному ID-суффиксу вида "_fieldref_<fieldName>".
+            // После матча обновляем FieldId и регистрируем в existingById, чтобы не удалять
+            // ноду и не создавать дубликат.
+            const string FieldRefPrefix = "_fieldref_";
+            foreach (var node in existingRefs)
+            {
+                if (!string.IsNullOrEmpty(node.FieldId)) continue;
+
+                // Первичный матч: по FieldName
+                var match = classFields.FirstOrDefault(f => f.Name == node.FieldName);
+
+                // Вторичный матч: по суффиксу NodeId ("_fieldref_<fieldName>")
+                if (match == null && node.NodeId != null && node.NodeId.StartsWith(FieldRefPrefix, StringComparison.Ordinal))
+                {
+                    var nameFromId = node.NodeId.Substring(FieldRefPrefix.Length);
+                    match = classFields.FirstOrDefault(f =>
+                        string.Equals(f.Name, nameFromId, StringComparison.Ordinal));
+                }
+
+                if (match != null)
+                {
+                    node.FieldId   = match.Id;
+                    node.FieldType = match.Type;
+                    node.FieldName = match.Name;
+                    existingById[match.Id] = node; // регистрируем под корректным GUID
+                }
+            }
+
+            // Удаляем только ноды для полей, которых больше нет в классе.
+            // Ноды с активными соединениями НЕ удаляем — они инжектированы парсером
+            // и несут реальные связи (exec-цепочка, data-рёбра).
+            foreach (var node in existingRefs)
+            {
+                if (!currentIds.Contains(node.FieldId))
+                {
+                    // Проверяем, есть ли у ноды активные соединения в графе
+                    bool hasConnections = runtime.BodyInternalGraph.edges
+                        .Any(e => e.inputNode == node || e.outputNode == node);
+
+                    if (hasConnections)
+                    {
+                        // Нода подключена — не удаляем. Пытаемся перепривязать по имени.
+                        var rescue = classFields.FirstOrDefault(f =>
+                            string.Equals(f.Name, node.FieldName, StringComparison.Ordinal));
+                        if (rescue != null)
+                        {
+                            node.FieldId   = rescue.Id;
+                            node.FieldType = rescue.Type;
+                            existingById[rescue.Id] = node;
+                        }
+                        continue;
+                    }
+
+                    try   { runtime.BodyGraphView.RemoveNode(node); }
+                    catch (Exception ex)
+                    {
+                        UnityEngine.Debug.LogWarning($"[VS] SyncBodyFieldRefs RemoveNode: {ex.Message}");
+                    }
+                }
+                else
+                {
+                    var f = classFields.First(x => x.Id == node.FieldId);
+                    node.FieldType = f.Type;
+                    node.FieldName = f.Name;
+                }
+            }
+
+            // Добавляем ноды только для полей, которых ещё нет
+            int count = existingRefs.Count(n => currentIds.Contains(n.FieldId));
+            for (int i = 0; i < classFields.Count; i++)
+            {
+                var field = classFields[i];
+                if (existingById.ContainsKey(field.Id)) continue;
+
+                var fn = new Nodes.Methods.FieldRefNode
+                {
+                    FieldId   = field.Id,
+                    FieldName = field.Name,
+                    FieldType = field.Type
+                };
+                fn.NodeId = "_fieldref_" + field.Id;
+                fn.SetGUID(fn.NodeId);
+                fn.position = new UnityEngine.Rect(260f, 40f + count * 120f, 200f, 80f);
+                count++;
+
+                try   { runtime.BodyGraphView.AddNode(fn); }
+                catch (Exception ex)
+                {
+                    UnityEngine.Debug.LogWarning($"[VS] SyncBodyFieldRefs AddNode: {ex.Message}");
+                }
+            }
         }
 
         private static List<ParameterDefinition> BuildParamDefs(MethodInfo mi)

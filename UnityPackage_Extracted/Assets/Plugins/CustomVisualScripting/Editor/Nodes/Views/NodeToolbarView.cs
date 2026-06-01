@@ -38,6 +38,9 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         private bool _showingMethodsCategory;
         private bool _showingClassesCategory;
 
+        // Развёрнутые классы в панели методов (по ClassId)
+        private readonly HashSet<string> _expandedClassIds = new(StringComparer.Ordinal);
+
         public NodeToolbarView(BaseGraphView graphView)
         {
             _graphView  = graphView;
@@ -65,7 +68,11 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         public void UpdateGraphView(BaseGraphView newGraphView)
         {
             _graphView = newGraphView;
+            ShowCategories();
         }
+
+        private GraphContext GetCurrentContext() =>
+            (_graphView as FilteredCreateMenuBaseGraphView)?.GraphContext ?? GraphContext.MethodBody;
 
         // ─── Построение UI ────────────────────────────────────────────────────
 
@@ -104,7 +111,7 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             Add(scrollView);
         }
 
-        // ─── Главный экран (список категорий) ─────────────────────────────────
+        // ─── Главный экран (диспетчер по контексту) ──────────────────────────
 
         private void ShowCategories()
         {
@@ -112,9 +119,34 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             _showingClassesCategory = false;
             _contentContainer.Clear();
 
-            // Категория «Классы» первой — зелёная
-            _contentContainer.Add(CreateClassesCategoryButton());
+            switch (GetCurrentContext())
+            {
+                case GraphContext.Main:
+                    ShowMainGraphContent();
+                    return;
+                case GraphContext.SubspaceExpr:
+                    ShowExprContent();
+                    return;
+                case GraphContext.MethodParam:
+                    ShowParamContent();
+                    return;
+                default: // MethodBody, SubspaceBody
+                    ShowExecutionContent();
+                    return;
+            }
+        }
 
+        // ─── Контент: главный граф (только классы) ────────────────────────────
+
+        private void ShowMainGraphContent()
+        {
+            _contentContainer.Add(CreateClassesCategoryButton());
+        }
+
+        // ─── Контент: тело метода / подпространство (execution-ноды) ─────────
+
+        private void ShowExecutionContent()
+        {
             // Категория «Методы» — циановая
             _contentContainer.Add(CreateMethodsCategoryButton());
 
@@ -126,9 +158,36 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             sep.style.marginBottom    = 4;
             _contentContainer.Add(sep);
 
-            // Стандартные категории (Class/ уже скрыт через ShouldHideMenuPath)
+            // Стандартные execution-категории
             foreach (var cat in _categories)
                 _contentContainer.Add(CreateCategoryButton(cat.Key));
+        }
+
+        // ─── Контент: expression-подпространство (только чистые выражения) ───
+
+        private static readonly HashSet<string> ExprCategories = new(StringComparer.Ordinal)
+            { "Literals", "Math", "Comparison", "Logic", "Conversion" };
+
+        private void ShowExprContent()
+        {
+            foreach (var cat in _categories)
+            {
+                if (ExprCategories.Contains(cat.Key))
+                    _contentContainer.Add(CreateCategoryButton(cat.Key));
+            }
+        }
+
+        // ─── Контент: param-граф (параметры добавляются только через ПКМ) ────
+
+        private void ShowParamContent()
+        {
+            var hint = new Label("ПКМ → Добавить параметр");
+            hint.style.fontSize    = 10;
+            hint.style.color       = new Color(0.6f, 0.6f, 0.6f);
+            hint.style.paddingLeft = 8;
+            hint.style.paddingTop  = 10;
+            hint.style.whiteSpace  = WhiteSpace.Normal;
+            _contentContainer.Add(hint);
         }
 
         // ─── Экран классов ────────────────────────────────────────────────────
@@ -148,7 +207,7 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             _showingClassesCategory = true;
             _contentContainer.Clear();
 
-            var backBtn = new Button(ShowCategories) { text = "← Back" };
+            var backBtn = new Button(ShowCategories) { text = "← Назад" };
             StyleBackButton(backBtn);
             _contentContainer.Add(backBtn);
 
@@ -348,12 +407,10 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             _showingClassesCategory = false;
             _contentContainer.Clear();
 
-            // ← Назад
-            var backBtn = new Button(() => ShowCategories()) { text = "← Back" };
+            var backBtn = new Button(() => ShowCategories()) { text = "← Назад" };
             StyleBackButton(backBtn);
             _contentContainer.Add(backBtn);
 
-            // Заголовок
             var titleLbl = new Label("Методы");
             titleLbl.style.fontSize               = 13;
             titleLbl.style.unityFontStyleAndWeight = FontStyle.Bold;
@@ -365,16 +422,15 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             titleLbl.style.unityTextAlign          = TextAnchor.MiddleCenter;
             _contentContainer.Add(titleLbl);
 
-            // Кнопка создания
             var createBtn = new Button(OnCreateMethodClicked) { text = "+ Создать метод" };
-            createBtn.style.fontSize     = 12;
-            createBtn.style.paddingTop   = 8;
-            createBtn.style.paddingBottom = 8;
+            createBtn.style.fontSize        = 12;
+            createBtn.style.paddingTop      = 8;
+            createBtn.style.paddingBottom   = 8;
             createBtn.style.backgroundColor = new Color(0.22f, 0.22f, 0.22f);
-            createBtn.style.marginBottom = 8;
-            createBtn.style.alignSelf    = Align.Stretch;
-            createBtn.style.flexGrow     = 1;
-            createBtn.style.width        = Length.Percent(100);
+            createBtn.style.marginBottom    = 8;
+            createBtn.style.alignSelf       = Align.Stretch;
+            createBtn.style.flexGrow        = 1;
+            createBtn.style.width           = Length.Percent(100);
             ApplyBorder(createBtn, MethodColor);
             createBtn.RegisterCallback<MouseEnterEvent>(_ =>
                 createBtn.style.backgroundColor = new Color(0.32f, 0.32f, 0.32f));
@@ -382,7 +438,6 @@ namespace CustomVisualScripting.Editor.Nodes.Views
                 createBtn.style.backgroundColor = new Color(0.22f, 0.22f, 0.22f));
             _contentContainer.Add(createBtn);
 
-            // Список методов
             var methods = MethodRegistry.Methods;
             if (methods.Count == 0)
             {
@@ -393,17 +448,112 @@ namespace CustomVisualScripting.Editor.Nodes.Views
                 return;
             }
 
-            foreach (var def in methods)
-                _contentContainer.Add(BuildMethodRow(def));
+            // Группируем методы по классу
+            var classes = ClassRegistry.Classes;
+
+            // Классы, у которых есть хотя бы один метод
+            foreach (var cls in classes)
+            {
+                var classMethods = methods
+                    .Where(m => string.Equals(m.ClassId, cls.Id, StringComparison.Ordinal))
+                    .ToList();
+                if (classMethods.Count == 0) continue;
+
+                _contentContainer.Add(BuildClassGroupHeader(cls.Id, cls.Name, classMethods.Count));
+
+                if (_expandedClassIds.Contains(cls.Id))
+                {
+                    foreach (var def in classMethods)
+                        _contentContainer.Add(BuildMethodRow(def));
+                }
+            }
+
+            // Методы без класса (legacy / ручное создание без ClassId)
+            var orphans = methods
+                .Where(m => string.IsNullOrEmpty(m.ClassId) ||
+                            classes.All(c => !string.Equals(c.Id, m.ClassId, StringComparison.Ordinal)))
+                .ToList();
+
+            if (orphans.Count > 0)
+            {
+                const string orphanKey = "__orphan__";
+                _contentContainer.Add(BuildClassGroupHeader(orphanKey, "Без класса", orphans.Count));
+                if (_expandedClassIds.Contains(orphanKey))
+                {
+                    foreach (var def in orphans)
+                        _contentContainer.Add(BuildMethodRow(def));
+                }
+            }
+        }
+
+        // ─── Заголовок группы класса ──────────────────────────────────────────
+
+        private VisualElement BuildClassGroupHeader(string classId, string className, int methodCount)
+        {
+            bool expanded = _expandedClassIds.Contains(classId);
+
+            var row = new VisualElement();
+            row.style.flexDirection   = FlexDirection.Row;
+            row.style.alignItems      = Align.Center;
+            row.style.marginTop       = 4;
+            row.style.marginBottom    = 2;
+            row.style.paddingLeft     = 4;
+            row.style.paddingRight    = 4;
+            row.style.paddingTop      = 4;
+            row.style.paddingBottom   = 4;
+            row.style.backgroundColor = new Color(0.20f, 0.20f, 0.20f);
+            row.style.borderTopLeftRadius     = 3;
+            row.style.borderTopRightRadius    = 3;
+            row.style.borderBottomLeftRadius  = expanded ? 0 : 3;
+            row.style.borderBottomRightRadius = expanded ? 0 : 3;
+
+            // Кнопка + / −
+            string toggleIcon = expanded ? "−" : "+";
+            var toggleBtn = new Button(() =>
+            {
+                if (_expandedClassIds.Contains(classId))
+                    _expandedClassIds.Remove(classId);
+                else
+                    _expandedClassIds.Add(classId);
+                ShowMethodsCategory();
+            });
+            toggleBtn.text                  = toggleIcon;
+            toggleBtn.style.width           = 22;
+            toggleBtn.style.height          = 22;
+            toggleBtn.style.fontSize        = 14;
+            toggleBtn.style.paddingLeft     = 0;
+            toggleBtn.style.paddingRight    = 0;
+            toggleBtn.style.paddingTop      = 0;
+            toggleBtn.style.paddingBottom   = 0;
+            toggleBtn.style.marginRight     = 6;
+            toggleBtn.style.flexShrink      = 0;
+            toggleBtn.style.backgroundColor = new Color(0.28f, 0.28f, 0.28f);
+            toggleBtn.style.unityTextAlign  = TextAnchor.MiddleCenter;
+            ApplyBorder(toggleBtn, MethodColor);
+            row.Add(toggleBtn);
+
+            // Название класса
+            var nameLabel = new Label($"{className}  ({methodCount})");
+            nameLabel.style.fontSize               = 12;
+            nameLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
+            nameLabel.style.color                   = MethodColor;
+            nameLabel.style.flexGrow                = 1;
+            nameLabel.style.textOverflow            = TextOverflow.Ellipsis;
+            nameLabel.style.overflow                = Overflow.Hidden;
+            nameLabel.style.whiteSpace              = WhiteSpace.NoWrap;
+            row.Add(nameLabel);
+
+            return row;
         }
 
         private VisualElement BuildMethodRow(MethodDefinition def)
         {
             var row = new VisualElement();
-            row.style.flexDirection = FlexDirection.Row;
-            row.style.alignItems    = Align.Center;
-            row.style.marginTop     = 2;
-            row.style.marginBottom  = 2;
+            row.style.flexDirection   = FlexDirection.Row;
+            row.style.alignItems      = Align.Center;
+            row.style.marginTop       = 0;
+            row.style.marginBottom    = 1;
+            row.style.paddingLeft     = 10;  // отступ — визуальная вложенность
 
             // Кнопка «создать call-ноду»
             var callBtn = new Button(() => CreateMethodCallNode(def.Id));
@@ -411,34 +561,34 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             callBtn.tooltip               = def.Signature();
             callBtn.style.flexGrow        = 1;
             callBtn.style.fontSize        = 12;
-            callBtn.style.paddingTop      = 6;
-            callBtn.style.paddingBottom   = 6;
+            callBtn.style.paddingTop      = 5;
+            callBtn.style.paddingBottom   = 5;
             callBtn.style.paddingLeft     = 8;
-            callBtn.style.backgroundColor = new Color(0.25f, 0.25f, 0.25f);
+            callBtn.style.backgroundColor = new Color(0.23f, 0.23f, 0.23f);
             callBtn.style.unityTextAlign  = TextAnchor.MiddleLeft;
             callBtn.style.textOverflow    = TextOverflow.Ellipsis;
             callBtn.style.overflow        = Overflow.Hidden;
             callBtn.style.whiteSpace      = WhiteSpace.NoWrap;
-            ApplyBorder(callBtn, MethodColor);
+            ApplyBorder(callBtn, new Color(0.3f, 0.6f, 0.7f));
             row.Add(callBtn);
 
             // Кнопка «✎ редактировать»
             var editBtn = new Button(() => OnEditMethodClicked(def.Id)) { text = "✎" };
             editBtn.tooltip               = "Редактировать";
-            editBtn.style.width           = 26;
-            editBtn.style.fontSize        = 12;
+            editBtn.style.width           = 24;
+            editBtn.style.fontSize        = 11;
             editBtn.style.paddingLeft     = 0;
             editBtn.style.paddingRight    = 0;
             editBtn.style.marginLeft      = 2;
             editBtn.style.backgroundColor = new Color(0.25f, 0.25f, 0.25f);
-            ApplyBorder(editBtn, new Color(0.6f, 0.6f, 0.6f));
+            ApplyBorder(editBtn, new Color(0.5f, 0.5f, 0.5f));
             row.Add(editBtn);
 
             // Кнопка «✕ удалить»
             var delBtn = new Button(() => OnDeleteMethodClicked(def.Id)) { text = "✕" };
             delBtn.tooltip               = "Удалить";
-            delBtn.style.width           = 26;
-            delBtn.style.fontSize        = 12;
+            delBtn.style.width           = 24;
+            delBtn.style.fontSize        = 11;
             delBtn.style.paddingLeft     = 0;
             delBtn.style.paddingRight    = 0;
             delBtn.style.marginLeft      = 2;
@@ -534,10 +684,12 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             Vector2 graphCenter = (screenCenter - pan) / scale;
             Vector2 finalPos    = FindFreePosition(graphCenter, 220, 100, 25f);
 
+            var classDef = ClassRegistry.GetById(def.ClassId);
             var node = new MethodCallNode
             {
                 MethodId         = def.Id,
                 MethodName       = def.Name,
+                ClassName        = classDef?.Name ?? "",
                 ReturnType       = def.ReturnType,
                 ActiveParamCount = Mathf.Min(def.Parameters.Count, MethodCallNode.MaxParams),
                 ParamNames       = new string[MethodCallNode.MaxParams],
@@ -568,7 +720,7 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         private VisualElement CreateCategoryButton(string category)
         {
             var btn = new Button(() => ShowNodesForCategory(category));
-            btn.text = category;
+            btn.text = FilteredCreateMenuBaseGraphView.TranslateCategory(category);
             StyleCategoryButton(btn, CategoryColors.TryGetValue(category, out var c) ? c : Color.gray);
             return btn;
         }
@@ -577,11 +729,11 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         {
             _contentContainer.Clear();
 
-            var backBtn = new Button(ShowCategories) { text = "← Back" };
+            var backBtn = new Button(ShowCategories) { text = "← Назад" };
             StyleBackButton(backBtn);
             _contentContainer.Add(backBtn);
 
-            var titleLbl = new Label(category);
+            var titleLbl = new Label(FilteredCreateMenuBaseGraphView.TranslateCategory(category));
             titleLbl.style.fontSize               = 13;
             titleLbl.style.unityFontStyleAndWeight = FontStyle.Bold;
             titleLbl.style.color                   = Color.white;

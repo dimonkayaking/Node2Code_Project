@@ -81,8 +81,7 @@ namespace CustomVisualScripting.Editor.Classes
                 def = new ClassDefinition
                 {
                     Id   = Guid.NewGuid().ToString(),
-                    Name = _name.Trim(),
-                    ClassBodyGraph = new VisualScripting.Core.Models.GraphData()
+                    Name = _name.Trim()
                 };
             }
 

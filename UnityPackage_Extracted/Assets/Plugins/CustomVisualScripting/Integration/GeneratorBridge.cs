@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -17,6 +18,79 @@ namespace CustomVisualScripting.Integration
         }
 
         // ─── Основной API ─────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Генерирует полный C#-код из классов и их методов.
+        /// Каждый класс превращается в <c>class ClassName { static fields; static methods; }</c>.
+        /// Методы без ClassId попадают в последний класс «Program» (или игнорируются).
+        /// </summary>
+        public static string GenerateWithClasses(
+            IEnumerable<ClassInfo> classes,
+            IEnumerable<MethodInfo> methods)
+        {
+            var classList  = (classes  ?? Enumerable.Empty<ClassInfo>()).ToList();
+            var methodList = (methods  ?? Enumerable.Empty<MethodInfo>())
+                .Where(m => m != null && !string.IsNullOrWhiteSpace(m.Id))
+                .ToList();
+
+            if (classList.Count == 0)
+                return "// Нет классов";
+
+            // Нормализуем порты
+            foreach (var m in methodList)
+                if (m.BodyGraph != null) NormalizePorts(m.BodyGraph);
+
+            var methodInfosById = methodList.ToDictionary(m => m.Id);
+
+            var sb = new StringBuilder();
+            bool first = true;
+
+            foreach (var cls in classList)
+            {
+                if (!first) sb.AppendLine();
+                first = false;
+
+                sb.AppendLine($"class {cls.Name}");
+                sb.AppendLine("{");
+
+                // Статические поля
+                foreach (var field in cls.Fields ?? Enumerable.Empty<ClassFieldData>())
+                {
+                    var defaultVal = GetDefaultForType(field.Type);
+                    if (!string.IsNullOrWhiteSpace(field.DefaultValue))
+                        defaultVal = field.DefaultValue;
+                    sb.AppendLine($"    public static {field.Type} {field.Name} = {defaultVal};");
+                }
+                if (cls.Fields?.Count > 0) sb.AppendLine();
+
+                // Статические методы класса
+                var classMethods = methodList
+                    .Where(m => string.Equals(m.ClassId, cls.Id, StringComparison.Ordinal))
+                    .ToList();
+
+                bool firstMethod = true;
+                foreach (var def in classMethods)
+                {
+                    if (!firstMethod) sb.AppendLine();
+                    firstMethod = false;
+
+                    var code = BuildStaticMethod(def, methodInfosById);
+                    sb.AppendLine(IndentLines(code, 1));
+                }
+
+                sb.AppendLine("}");
+            }
+
+            return sb.ToString().TrimEnd();
+        }
+
+        private static string GetDefaultForType(string type) => type switch
+        {
+            "float"  => "0f",
+            "bool"   => "false",
+            "string" => "\"\"",
+            _        => "0"
+        };
 
         /// <summary>Генерирует код только из основного графа (без пользовательских методов).</summary>
         public static string Generate(GraphData graph)
@@ -101,11 +175,14 @@ namespace CustomVisualScripting.Integration
                     {
                         var type = (def.ParamTypes != null && i < def.ParamTypes.Count)
                             ? def.ParamTypes[i] : "object";
-                        return $"{type} {def.ParamNames[i]}";
+                        var defaultVal = (def.ParamDefaults != null && i < def.ParamDefaults.Count)
+                            ? def.ParamDefaults[i] : "";
+                        var param = $"{type} {def.ParamNames[i]}";
+                        return string.IsNullOrWhiteSpace(defaultVal) ? param : $"{param} = {defaultVal}";
                     }));
 
             var returnType = string.IsNullOrEmpty(def.ReturnType) ? "void" : def.ReturnType;
-            var signature  = $"static {returnType} {def.Name}({paramList})";
+            var signature  = $"public static {returnType} {def.Name}({paramList})";
 
             var bodyCode = _generator.GenerateMethodBody(def.BodyGraph, def, allMethods);
 

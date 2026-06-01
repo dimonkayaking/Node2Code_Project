@@ -317,7 +317,9 @@ namespace CustomVisualScripting.Editor.Windows
                 nodeMap[sourceNode.Id] = customNode;
             }
 
-            runtime.GraphView = new FilteredCreateMenuBaseGraphView(this);
+            runtime.GraphView = tab.SubspaceKind.Value == SubspaceKind.Body
+                ? (FilteredCreateMenuBaseGraphView)new SubspaceBodyGraphView(this)
+                : new SubspaceExprGraphView(this);
             runtime.GraphView.Initialize(runtime.InternalGraph);
             runtime.GraphView.style.flexGrow = 1;
             runtime.GraphView.graphViewChanged += change =>

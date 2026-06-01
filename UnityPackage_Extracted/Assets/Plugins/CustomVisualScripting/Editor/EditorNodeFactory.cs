@@ -85,6 +85,8 @@ namespace CustomVisualScripting.Editor
                 case NodeType.ReturnValue:  return new ReturnNode();
                 case NodeType.ClassNode:    return new ClassNode();
                 case NodeType.MethodOwner:  return new MethodOwnerNode();
+                case NodeType.FieldRef:     return new FieldRefNode();
+                case NodeType.FieldSet:     return new FieldSetNode();
                 default: return null;
             }
         }

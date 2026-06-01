@@ -10,8 +10,20 @@ using UnityEngine.UIElements;
 
 namespace CustomVisualScripting.Editor.Nodes.Views
 {
+    /// <summary>Контекст графа — определяет, какие ноды разрешены к созданию.</summary>
+    public enum GraphContext
+    {
+        Main,          // главный граф — только ClassNode
+        MethodBody,    // тело метода — execution-ноды
+        MethodParam,   // параметры метода — только MethodParam
+        SubspaceBody,  // тело if/while/for — execution-ноды
+        SubspaceExpr,  // условие/init/increment — только expression-ноды
+    }
+
     public class FilteredCreateMenuBaseGraphView : BaseGraphView
     {
+        /// <summary>Контекст этого graph view — используется NodeToolbarView.</summary>
+        public virtual GraphContext GraphContext => GraphContext.SubspaceBody;
         static readonly MethodInfo s_baseReloadView =
             typeof(BaseGraphView).GetMethod("ReloadView", BindingFlags.Instance | BindingFlags.NonPublic);
 
@@ -175,12 +187,13 @@ namespace CustomVisualScripting.Editor.Nodes.Views
 
             foreach (var kv in grouped.OrderBy(g => g.Key))
             {
-                string category = kv.Key;
+                string category    = kv.Key;
+                string categoryRu  = TranslateCategory(category);
                 foreach (var node in kv.Value.OrderBy(n => n.fullPath))
                 {
                     string nodeName = node.fullPath.Split('/').Last();
                     Type nodeType = node.type;
-                    evt.menu.AppendAction($"{category}/{nodeName}", action =>
+                    evt.menu.AppendAction($"{categoryRu}/{nodeName}", action =>
                     {
                         CreateNodeAtPosition(nodeType, mouseGraphPos);
                     });
@@ -197,6 +210,22 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             node.position = new Rect(graphPosition.x - 100, graphPosition.y - 50, 200, 100);
             AddNode(node);
         }
+
+        // ─── Локализация категорий ────────────────────────────────────────────
+
+        private static readonly Dictionary<string, string> s_categoryRu = new(StringComparer.Ordinal)
+        {
+            { "Literals",   "Значения"       },
+            { "Math",       "Математика"     },
+            { "Comparison", "Сравнение"      },
+            { "Logic",      "Логика"         },
+            { "Flow",       "Управление"     },
+            { "Conversion", "Преобразование" },
+        };
+
+        /// <summary>Возвращает русское название категории (если есть) или оригинальное.</summary>
+        public static string TranslateCategory(string category) =>
+            s_categoryRu.TryGetValue(category, out var ru) ? ru : category;
 
         protected virtual bool ShouldHideMenuPath(string path)
         {

@@ -44,24 +44,38 @@ namespace CustomVisualScripting.Windows.Views
                 Clear();
                 return;
             }
-            
+
             style.display = DisplayStyle.Flex;
             _titleLabel.style.display = DisplayStyle.Flex;
             _errorScrollView.style.display = DisplayStyle.Flex;
-            
+
             _errorScrollView.Clear();
-            
             foreach (var error in errors)
-            {
-                var errorLabel = new Label($"• {error}");
-                errorLabel.style.color = new Color(1f, 0.5f, 0.5f);
-                errorLabel.style.fontSize = 11;
-                errorLabel.style.marginBottom = 2;
-                errorLabel.style.whiteSpace = WhiteSpace.Normal;
-                _errorScrollView.Add(errorLabel);
-            }
+                AddErrorLabel(error);
         }
-        
+
+        /// <summary>Добавляет одну ошибку не сбрасывая уже показанные.</summary>
+        public void AddError(string error)
+        {
+            if (string.IsNullOrWhiteSpace(error)) return;
+
+            style.display = DisplayStyle.Flex;
+            _titleLabel.style.display = DisplayStyle.Flex;
+            _errorScrollView.style.display = DisplayStyle.Flex;
+
+            AddErrorLabel(error);
+        }
+
+        private void AddErrorLabel(string text)
+        {
+            var lbl = new Label($"• {text}");
+            lbl.style.color        = new Color(1f, 0.5f, 0.5f);
+            lbl.style.fontSize     = 11;
+            lbl.style.marginBottom = 2;
+            lbl.style.whiteSpace   = WhiteSpace.Normal;
+            _errorScrollView.Add(lbl);
+        }
+
         public new void Clear()
         {
             style.display = DisplayStyle.None;

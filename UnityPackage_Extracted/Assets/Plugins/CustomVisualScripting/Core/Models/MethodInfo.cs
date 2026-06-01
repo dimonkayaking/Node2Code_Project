@@ -11,8 +11,12 @@ namespace VisualScripting.Core.Models
         public string Id         { get; set; } = "";
         public string Name       { get; set; } = "";
         public string ReturnType { get; set; } = "void";
-        public List<string> ParamNames { get; set; } = new List<string>();
-        public List<string> ParamTypes { get; set; } = new List<string>();
+        /// <summary>Id класса-владельца (Editor ClassDefinition.Id). Пустая строка — метод не привязан к классу.</summary>
+        public string ClassId    { get; set; } = "";
+        public string ClassName  { get; set; } = "";
+        public List<string> ParamNames    { get; set; } = new List<string>();
+        public List<string> ParamTypes    { get; set; } = new List<string>();
+        public List<string> ParamDefaults { get; set; } = new List<string>();
         /// <summary>Граф тела метода (нужен только генератору).</summary>
         public GraphData BodyGraph { get; set; }
     }

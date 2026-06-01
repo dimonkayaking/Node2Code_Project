@@ -31,7 +31,8 @@ namespace CustomVisualScripting.Editor.Methods
 
         // ─── Фабрика ──────────────────────────────────────────────────────────
 
-        public static void ShowCreate(Action<MethodDefinition> onConfirm, string defaultName = "MyMethod")
+        public static void ShowCreate(Action<MethodDefinition> onConfirm, string defaultName = "MyMethod",
+            string preselectedClassId = null)
         {
             var w = CreateInstance<CreateMethodPopup>();
             w.titleContent   = new GUIContent("Новый метод");
@@ -39,7 +40,7 @@ namespace CustomVisualScripting.Editor.Methods
             w._editing       = null;
             w._name          = defaultName;
             w._returnTypeIdx = 0;
-            w.RefreshClassList(selectedClassId: null);
+            w.RefreshClassList(selectedClassId: preselectedClassId);
             w.ShowUtility();
             w.minSize = new Vector2(380, 320);
         }

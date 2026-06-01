@@ -76,6 +76,11 @@ namespace VisualScripting.Core.Parsers
         // Методы класса, извлечённые из top-level class wrapper при StripClassWrapper
         private List<MethodDeclarationSyntax> _pendingClassMethods = new List<MethodDeclarationSyntax>();
 
+        // Структура классов, обнаруженная при StripClassWrapper
+        private bool _hasClassWrapper;
+        private string _mainClassName = "";
+        private List<ParsedClassInfo> _discoveredClasses = new List<ParsedClassInfo>();
+
         /// <summary>Передаёт метаданные зарегистрированных методов до вызова Parse().</summary>
         public void SetKnownMethods(IReadOnlyList<MethodInfo> methods)
         {
@@ -94,9 +99,12 @@ namespace VisualScripting.Core.Parsers
             _graphStack.Clear();
             _varRefStack.Clear();
             _subGraphVarRefs = null;
-            _discoveredMethods = new List<MethodInfo>();
+            _discoveredMethods    = new List<MethodInfo>();
             _isParsingFunctionBody = false;
-            _pendingClassMethods = new List<MethodDeclarationSyntax>();
+            _pendingClassMethods  = new List<MethodDeclarationSyntax>();
+            _hasClassWrapper      = false;
+            _mainClassName        = "";
+            _discoveredClasses    = new List<ParsedClassInfo>();
             _expressionDepth = 0;
             _userCodeLineOffset = 0;
             _semanticModel = null;
@@ -182,7 +190,10 @@ namespace VisualScripting.Core.Parsers
             {
                 Graph             = _graph,
                 Errors            = _errors,
-                DiscoveredMethods = _discoveredMethods
+                DiscoveredMethods = _discoveredMethods,
+                HasClassWrapper   = _hasClassWrapper,
+                MainClassName     = _mainClassName,
+                DiscoveredClasses = _discoveredClasses
             };
 
         /// <summary>
@@ -203,6 +214,38 @@ namespace VisualScripting.Core.Parsers
             // а не по префиксу строки — устойчиво к атрибутам, комментариям и модификаторам.
             if (!HasTopLevelTypeDeclaration(rawRoot))
                 return code;
+
+            // Собираем структуру классов (методы + поля) для передачи в Editor-слой
+            _hasClassWrapper = true;
+            foreach (var classDecl in rawRoot.DescendantNodes().OfType<ClassDeclarationSyntax>())
+            {
+                var info = new ParsedClassInfo { Name = classDecl.Identifier.Text };
+
+                // Методы
+                foreach (var m in classDecl.Members.OfType<MethodDeclarationSyntax>())
+                    info.MethodNames.Add(m.Identifier.Text);
+
+                // Поля (static int value = 0 и т.п.)
+                foreach (var fieldDecl in classDecl.Members.OfType<FieldDeclarationSyntax>())
+                {
+                    var rawType    = fieldDecl.Declaration.Type.ToString().Trim();
+                    var mappedType = MapValueType(rawType) ?? "int";
+                    foreach (var variable in fieldDecl.Declaration.Variables)
+                    {
+                        var defaultVal = variable.Initializer?.Value?.ToString().Trim() ?? "";
+                        info.Fields.Add(new ParsedFieldInfo
+                        {
+                            Name         = variable.Identifier.Text,
+                            Type         = mappedType,
+                            DefaultValue = defaultVal
+                        });
+                    }
+                }
+
+                _discoveredClasses.Add(info);
+                if (info.MethodNames.Contains("Main"))
+                    _mainClassName = info.Name;
+            }
 
             var allMethods = rawRoot.DescendantNodes()
                 .OfType<MethodDeclarationSyntax>()
@@ -247,7 +290,7 @@ namespace VisualScripting.Core.Parsers
             {
                 if (m is BaseTypeDeclarationSyntax
                     || m is NamespaceDeclarationSyntax
-                    || m is FileScopedNamespaceDeclarationSyntax)
+                    || m.IsKind((SyntaxKind)8845)) // FileScopedNamespaceDeclaration (Roslyn 4.0+)
                     return true;
             }
             return false;
@@ -302,8 +345,31 @@ namespace VisualScripting.Core.Parsers
             var mi = _knownMethods.FirstOrDefault(m => m.Id == id)
                      ?? BuildMethodInfoSignature(mdecl);
             if (mi == null) return;
-            mi.BodyGraph = ParseMethodBodyGraph(mdecl.Body, mi);
+
+            // Извлекаем поля родительского класса — они должны быть видны в теле метода.
+            var classFields = ExtractClassFieldsFromParent(mdecl);
+
+            mi.BodyGraph = ParseMethodBodyGraph(mdecl.Body, mi, classFields);
             _discoveredMethods.Add(mi);
+        }
+
+        /// <summary>
+        /// Возвращает (name, mappedType) для каждого поля объявленного в классе-владельце метода.
+        /// </summary>
+        private static List<(string name, string type)> ExtractClassFieldsFromParent(
+            MethodDeclarationSyntax mdecl)
+        {
+            var result = new List<(string, string)>();
+            if (mdecl.Parent is not ClassDeclarationSyntax classDecl) return result;
+
+            foreach (var member in classDecl.Members.OfType<FieldDeclarationSyntax>())
+            {
+                var rawType  = member.Declaration.Type.ToString().Trim();
+                var typeStr  = MapValueType(rawType) ?? "int";
+                foreach (var variable in member.Declaration.Variables)
+                    result.Add((variable.Identifier.Text, typeStr));
+            }
+            return result;
         }
 
         /// <summary>
@@ -682,7 +748,8 @@ namespace VisualScripting.Core.Parsers
         /// Параметры функции инжектируются как <see cref="NodeType.MethodParam"/> ноды
         /// со стабильными ID <c>"_paramref_{name}"</c>.
         /// </summary>
-        private GraphData ParseMethodBodyGraph(BlockSyntax body, MethodInfo methodInfo)
+        private GraphData ParseMethodBodyGraph(BlockSyntax body, MethodInfo methodInfo,
+            List<(string name, string type)> classFields = null)
         {
             if (body == null) return new GraphData();
 
@@ -723,13 +790,33 @@ namespace VisualScripting.Core.Parsers
                     {
                         Id           = paramId,
                         Type         = NodeType.MethodParam,
-                        Value        = ptype,    // хранит тип (как MethodParamNode.ToNodeData())
+                        Value        = ptype,
                         ValueType    = ptype,
-                        VariableName = pname     // хранит имя (как MethodParamNode.ToNodeData())
+                        VariableName = pname
                     });
 
                     _symbolToNodeId[pname] = paramId;
                     _variableTypes[pname]  = ptype;
+                }
+
+                // ── Инжектируем поля класса как FieldRef-ноды ─────────────────────
+                // Это позволяет парсеру распознавать обращения к полям (value = ..., return value)
+                // без ошибки «Неизвестный идентификатор».
+                if (classFields != null)
+                {
+                    foreach (var (fieldName, fieldType) in classFields)
+                    {
+                        var fieldRefId = "_fieldref_" + fieldName;
+                        bodyGraph.Nodes.Add(new NodeData
+                        {
+                            Id           = fieldRefId,
+                            Type         = NodeType.FieldRef,
+                            VariableName = fieldName,
+                            ValueType    = fieldType
+                        });
+                        _symbolToNodeId[fieldName] = fieldRefId;
+                        _variableTypes[fieldName]  = fieldType;
+                    }
                 }
 
                 // ── Парсим тело ───────────────────────────────────────────────────
@@ -955,11 +1042,38 @@ namespace VisualScripting.Core.Parsers
                 if (assign.Kind() == SyntaxKind.SimpleAssignmentExpression)
                 {
                     var idLeft = (IdentifierNameSyntax)assign.Left;
-                    var name = idLeft.Identifier.Text;
+                    var name   = idLeft.Identifier.Text;
                     var rootId = VisitExpression(assign.Right, false, null, out var unsupported);
                     if (unsupported || rootId == null)
                         return null;
 
+                    // ── Присваивание полю класса (FieldRef-нода) ──────────────────
+                    // Каждое присваивание создаёт НОВЫЙ FieldSet-узел, а не переиспользует
+                    // FieldRef. Это предотвращает self-loop в exec-цепочке при повторных
+                    // присваиваниях одного поля и множественные value-рёбра к одному узлу.
+                    // _symbolToNodeId[name] не меняем: читает поле по-прежнему FieldRef.
+                    if (_symbolToNodeId.TryGetValue(name, out var existingId))
+                    {
+                        var existingNode = _graph.Nodes.FirstOrDefault(n => n.Id == existingId);
+                        if (existingNode?.Type == NodeType.FieldRef)
+                        {
+                            var fieldSetId = NewId();
+                            _graph.Nodes.Add(new NodeData
+                            {
+                                Id           = fieldSetId,
+                                Type         = NodeType.FieldSet,
+                                VariableName = existingNode.VariableName,
+                                ValueType    = existingNode.ValueType,
+                                Value        = existingNode.Value
+                            });
+                            AddEdge(rootId, GetDataOutPortForNodeId(rootId), fieldSetId, "value");
+                            if (prevNode != null)
+                                AddEdge(prevNode, prevPort, fieldSetId, PortIds.ExecIn);
+                            return new FlowHost { NodeId = fieldSetId, ExecOutPort = PortIds.ExecOut };
+                        }
+                    }
+
+                    // ── Стандартное присваивание локальной переменной ─────────────
                     var rootNode = _graph.Nodes.FirstOrDefault(n => n.Id == rootId);
                     string litId;
                     if (rootNode != null && IsLiteralNodeType(rootNode.Type) && string.IsNullOrEmpty(rootNode.VariableName))
@@ -1810,6 +1924,32 @@ namespace VisualScripting.Core.Parsers
                 case MemberAccessExpressionSyntax mathMem when
                     IsMathfStaticReceiver(mathMem.Expression) || IsSystemMathStaticReceiver(mathMem.Expression):
                     return CreatePassthroughMathLiteral(mathMem.ToString(), isRoot, assignVariableToRoot);
+
+                case MemberAccessExpressionSyntax memberAccess:
+                {
+                    // Static field / property read from another class (e.g. Calculator.accumulator).
+                    // Emit as passthrough — generator uses ExpressionOverride as-is.
+                    var inferredType = TryInferSupportedType(memberAccess) ?? "int";
+                    var nodeId = NewId();
+                    var vn = isRoot && !string.IsNullOrEmpty(assignVariableToRoot) ? assignVariableToRoot : "";
+                    NodeType litType = inferredType switch
+                    {
+                        "float"  => NodeType.LiteralFloat,
+                        "bool"   => NodeType.LiteralBool,
+                        "string" => NodeType.LiteralString,
+                        _        => NodeType.LiteralInt
+                    };
+                    _graph.Nodes.Add(new NodeData
+                    {
+                        Id                 = nodeId,
+                        Type               = litType,
+                        Value              = "",
+                        ValueType          = inferredType,
+                        VariableName       = vn,
+                        ExpressionOverride = memberAccess.ToString().Trim()
+                    });
+                    return nodeId;
+                }
 
                 case ConditionalExpressionSyntax cond:
                     return CreateStringExpressionLiteralNode(cond.ToString().Trim(), isRoot ? assignVariableToRoot : null);

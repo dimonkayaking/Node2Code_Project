@@ -7,8 +7,9 @@ namespace CustomVisualScripting.Editor.Methods
     [Serializable]
     public class ParameterDefinition
     {
-        public string Name = "param";
-        public string Type = "int"; // "int" | "float" | "bool" | "string"
+        public string Name         = "param";
+        public string Type         = "int"; // "int" | "float" | "bool" | "string"
+        public string DefaultValue = "";    // пустая строка → без значения по умолчанию
     }
 
     [Serializable]

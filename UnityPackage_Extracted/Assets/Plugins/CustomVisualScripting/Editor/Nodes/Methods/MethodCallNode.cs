@@ -7,6 +7,7 @@ using VisualScripting.Core.Models;
 using CustomVisualScripting.Editor.Nodes.Base;
 
 using CustomVisualScripting.Editor.Methods;
+using CustomVisualScripting.Editor.Classes;
 
 namespace CustomVisualScripting.Editor.Nodes.Methods
 {
@@ -27,10 +28,17 @@ namespace CustomVisualScripting.Editor.Nodes.Methods
         // ─── Мета ─────────────────────────────────────────────────────────────
         [HideInInspector] public string MethodId;
         [HideInInspector] public string MethodName;
+        [HideInInspector] public string ClassName  = "";   // имя класса-владельца
         [HideInInspector] public string ReturnType = "void";
         [HideInInspector] public int    ActiveParamCount;
         [HideInInspector] public string[] ParamNames = new string[MaxParams];
         [HideInInspector] public string[] ParamTypes  = new string[MaxParams];
+
+        // ─── Отображаемое имя ─────────────────────────────────────────────────
+        public override string name =>
+            string.IsNullOrEmpty(MethodName) ? "Method Call" :
+            string.IsNullOrEmpty(ClassName)  ? MethodName    :
+            $"{ClassName}.{MethodName}";
 
         // ─── Порты (фиксированные поля; отображение управляется CustomPortBehavior) ──
         [Input("param0")] public object param0;
@@ -137,6 +145,7 @@ namespace CustomVisualScripting.Editor.Nodes.Methods
             MethodName       = def.Name;
             ReturnType       = def.ReturnType;
             ActiveParamCount = Mathf.Min(def.Parameters.Count, MaxParams);
+            ClassName        = ClassRegistry.GetById(def.ClassId)?.Name ?? "";
 
             if (ParamNames == null || ParamNames.Length < MaxParams) ParamNames = new string[MaxParams];
             if (ParamTypes  == null || ParamTypes.Length  < MaxParams) ParamTypes  = new string[MaxParams];

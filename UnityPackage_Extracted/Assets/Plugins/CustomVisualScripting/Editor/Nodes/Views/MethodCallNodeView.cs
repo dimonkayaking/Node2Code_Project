@@ -23,7 +23,7 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             // создании PortView — здесь мы вызываем его только для заголовка и кнопки.
             _node.RefreshFromRegistry();
 
-            title = string.IsNullOrWhiteSpace(_node.MethodName) ? "Method" : _node.MethodName;
+            title = _node.name;  // "ClassName.MethodName" или просто "MethodName"
 
             // ── Цвет заголовка (циановый — цвет категории Методы) ────────────
             titleContainer.style.backgroundColor = new Color(0f, 0.47f, 0.53f, 0.55f);

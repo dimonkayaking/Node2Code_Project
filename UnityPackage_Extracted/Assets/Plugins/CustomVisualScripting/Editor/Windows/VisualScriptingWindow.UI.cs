@@ -111,6 +111,9 @@ namespace CustomVisualScripting.Editor.Windows
 
             _toolbar.SetStatusNormal("Готов к работе");
 
+            // При первом открытии создаём класс Program + метод Main если реестры пусты
+            EnsureProgramClassExists();
+
             UpdateGraphView();
 
             _graphAreaSplitter.Remove(tempStub);
@@ -185,7 +188,7 @@ namespace CustomVisualScripting.Editor.Windows
                     }
                 }
 
-                _graphView = new FilteredCreateMenuBaseGraphView(this);
+                _graphView = new MainClassGraphView(this);
                 _graphView.NodeViewAdded += OnNodeViewAdded;
                 _graphView.Initialize(_internalGraph);
                 _graphView.style.flexGrow = 1;

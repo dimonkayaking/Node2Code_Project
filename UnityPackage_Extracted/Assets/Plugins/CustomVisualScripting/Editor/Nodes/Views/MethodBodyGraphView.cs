@@ -11,6 +11,8 @@ namespace CustomVisualScripting.Editor.Nodes.Views
     {
         public MethodBodyGraphView(EditorWindow window) : base(window) { }
 
+        public override GraphContext GraphContext => GraphContext.MethodBody;
+
         protected override bool ShouldHideMenuPath(string path)
         {
             if (string.IsNullOrEmpty(path)) return false;

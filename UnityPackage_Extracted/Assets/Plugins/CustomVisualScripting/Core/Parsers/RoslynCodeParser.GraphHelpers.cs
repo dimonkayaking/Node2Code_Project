@@ -65,7 +65,8 @@ namespace VisualScripting.Core.Parsers
                 return false;
 
             return node.Type is NodeType.FlowIf or NodeType.FlowElse or NodeType.FlowFor or NodeType.FlowWhile
-                or NodeType.ConsoleWriteLine or NodeType.DebugLog;
+                or NodeType.ConsoleWriteLine or NodeType.DebugLog
+                or NodeType.FieldRef or NodeType.FieldSet or NodeType.MethodCall;
         }
 
         private bool SupportsExecIn(string nodeId)
@@ -75,7 +76,8 @@ namespace VisualScripting.Core.Parsers
                 return false;
 
             return node.Type is NodeType.FlowIf or NodeType.FlowElse or NodeType.FlowFor or NodeType.FlowWhile
-                or NodeType.ConsoleWriteLine or NodeType.DebugLog or NodeType.ReturnValue;
+                or NodeType.ConsoleWriteLine or NodeType.DebugLog or NodeType.ReturnValue
+                or NodeType.FieldRef or NodeType.FieldSet or NodeType.MethodCall;
         }
 
         private string NewId() => $"node_{_nodeCounter++}";

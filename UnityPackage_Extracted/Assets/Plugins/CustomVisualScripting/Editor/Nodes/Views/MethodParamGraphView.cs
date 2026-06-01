@@ -18,6 +18,11 @@ namespace CustomVisualScripting.Editor.Nodes.Views
     {
         public MethodParamGraphView(EditorWindow window) : base(window) { }
 
+        public override GraphContext GraphContext => GraphContext.MethodParam;
+
+        /// <summary>Ссылка на body-граф метода — задаётся из CreateMethodRuntime.</summary>
+        public FilteredCreateMenuBaseGraphView BodyGraphView { get; set; }
+
         /// <summary>
         /// Скрываем всё, кроме Method/* (MethodParamNode и др. ноды параметров).
         /// </summary>

@@ -60,6 +60,10 @@ namespace VisualScripting.Core.Models
 
         // Классы
         ClassNode,
-        MethodOwner
+        MethodOwner,
+
+        // Поля класса
+        FieldRef,   // чтение статического поля — output-порт
+        FieldSet    // запись статического поля — exec-нода + value-вход
     }
 }

@@ -250,6 +250,8 @@ namespace VisualScripting.Core.Generators
                 case NodeType.FlowWhile:
                 case NodeType.ConsoleWriteLine:
                 case NodeType.DebugLog:
+                case NodeType.FieldRef:
+                case NodeType.FieldSet:
                     return false;
                 default:
                     return true;
@@ -295,13 +297,21 @@ namespace VisualScripting.Core.Generators
                     break;
 
                 case NodeType.MethodParam:
-                    // Param-ноды — объявления параметров, а не операторы; пропускаем.
+                    // Объявления параметров — не операторы; пропускаем.
+                    break;
+
+                case NodeType.FieldRef:
+                    // В режиме записи (value-вход подключён) — присваиваем поле.
+                    EmitFieldRefWrite(node, sb, pad);
+                    break;
+
+                case NodeType.FieldSet:
+                    EmitFieldSet(node, sb, pad);
                     break;
 
                 case NodeType.ClassNode:
                 case NodeType.MethodOwner:
-                    // Структурные ноды (класс / владелец метода) — не операторы и не
-                    // переменные; пропускаем, цепочка исполнения продолжается дальше.
+                    // Структурные ноды — пропускаем.
                     break;
 
                 case NodeType.ReturnValue:
@@ -400,8 +410,8 @@ namespace VisualScripting.Core.Generators
             if (node == null)
                 return "???";
 
-            // MethodParam — предобъявленный параметр; используем его имя как выражение
-            if (node.Type == NodeType.MethodParam)
+            // MethodParam / FieldRef — предобъявленные переменные; используем имя как выражение
+            if (node.Type is NodeType.MethodParam or NodeType.FieldRef)
                 return !string.IsNullOrEmpty(node.VariableName) ? node.VariableName : "???";
 
             // MethodCall — генерируем вызов (VariableName == MethodName, не переменная-результат)
@@ -782,7 +792,31 @@ namespace VisualScripting.Core.Generators
                 }
             }
 
-            return $"{methodName}({string.Join(", ", args)})";
+            // Для статических методов с классом-владельцем добавляем префикс ClassName.
+            var prefix = (!string.IsNullOrEmpty(def?.ClassName)) ? def.ClassName + "." : "";
+            return $"{prefix}{methodName}({string.Join(", ", args)})";
+        }
+
+        /// <summary>
+        /// Если к FieldRef подключён value-вход — это режим записи: emit <c>field = expr;</c>.
+        /// Если value-вход не подключён — нода используется только для чтения; пропускаем.
+        /// </summary>
+        private void EmitFieldRefWrite(NodeData node, StringBuilder sb, string pad)
+        {
+            var valEdge = _graph.Edges.FirstOrDefault(e => e.ToNodeId == node.Id && e.ToPort == "value");
+            if (valEdge == null) return; // режим чтения — не оператор
+            var expr = EmitExpr(valEdge.FromNodeId);
+            sb.AppendLine($"{pad}{node.VariableName} = {expr};");
+        }
+
+        private void EmitFieldSet(NodeData node, StringBuilder sb, string pad)
+        {
+            var fieldName = node.VariableName;
+            if (string.IsNullOrEmpty(fieldName)) return;
+
+            var valEdge = _graph.Edges.FirstOrDefault(e => e.ToNodeId == node.Id && e.ToPort == "value");
+            var expr    = valEdge != null ? EmitExpr(valEdge.FromNodeId) : GetDefaultValue(node.ValueType);
+            sb.AppendLine($"{pad}{fieldName} = {expr};");
         }
 
         private void EmitConsoleWriteLine(NodeData node, StringBuilder sb, string pad)
@@ -835,8 +869,8 @@ namespace VisualScripting.Core.Generators
             if (node.Type == NodeType.MethodCall)
                 return BuildMethodCallExpr(nodeId);
 
-            // MethodParam: предобъявленный параметр — просто имя
-            if (node.Type == NodeType.MethodParam)
+            // MethodParam / FieldRef: предобъявленные переменные — просто имя
+            if (node.Type is NodeType.MethodParam or NodeType.FieldRef)
                 return !string.IsNullOrEmpty(node.VariableName) ? node.VariableName : "???";
 
             if (!string.IsNullOrEmpty(node.VariableName) && nodeId != selfId)
@@ -1059,11 +1093,15 @@ namespace VisualScripting.Core.Generators
 
         private bool IsStatementEntryNode(NodeData n)
         {
-            // Param-ноды — объявления, а не операторы
             if (n.Type == NodeType.MethodParam) return false;
 
+            // FieldRef — оператор только в режиме записи (value-вход подключён)
+            if (n.Type == NodeType.FieldRef)
+                return _graph.Edges.Any(e => e.ToNodeId == n.Id && e.ToPort == "value");
+
             if (n.Type is NodeType.FlowIf or NodeType.FlowElse or NodeType.FlowFor or NodeType.FlowWhile
-                or NodeType.ConsoleWriteLine or NodeType.DebugLog or NodeType.ReturnValue)
+                or NodeType.ConsoleWriteLine or NodeType.DebugLog or NodeType.ReturnValue
+                or NodeType.FieldSet)
                 return true;
 
             // MethodCall — оператор, если:

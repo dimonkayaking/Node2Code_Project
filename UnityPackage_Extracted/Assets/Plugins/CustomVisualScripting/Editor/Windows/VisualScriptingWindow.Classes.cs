@@ -4,12 +4,8 @@ using System.IO;
 using System.Linq;
 using GraphProcessor;
 using Newtonsoft.Json;
-using CustomVisualScripting.Editor;
 using CustomVisualScripting.Editor.Classes;
-using CustomVisualScripting.Editor.Nodes.Base;
-using CustomVisualScripting.Editor.Nodes.Methods;
 using CustomVisualScripting.Editor.Nodes.Views;
-using UnityEditor;
 using UnityEngine;
 using UnityEngine.UIElements;
 using VisualScripting.Core.Models;
@@ -18,10 +14,12 @@ namespace CustomVisualScripting.Editor.Windows
 {
     public partial class VisualScriptingWindow
     {
-        // ─── Префикс вкладки класса ───────────────────────────────────────────
+        // ─── Префикс вкладки класса (зарезервирован для совместимости Tabs.cs) ────
         private const string ClassTabPrefix = "class:";
 
-        // ─── Рантаймы вкладок классов ─────────────────────────────────────────
+        // ─── Заглушка ClassTabRuntime (класс-вкладки больше не открываются) ──────
+        // Словарь всегда пустой; методы ниже — no-op.
+        // Необходимо для совместимости с VisualScriptingWindow.Tabs.cs.
         private readonly Dictionary<string, ClassTabRuntime> _classTabRuntimes =
             new(StringComparer.Ordinal);
 
@@ -29,70 +27,19 @@ namespace CustomVisualScripting.Editor.Windows
         {
             public ClassDefinition Definition;
             public VisualElement   Container;
-
-            // Граф тела класса — MethodOwnerNode-ноды, соединённые цепочкой
-            public ClassBodyGraphView BodyGraphView;
-            public BaseGraph          BodyInternalGraph;
-
-            public IVisualElementScheduledItem SyncTicker;
+            public BaseGraphView   BodyGraphView;  // всегда null в новой схеме
         }
 
-        // ─── Сериализация классов ─────────────────────────────────────────────
+        // ─── Сериализация классов ─────────────────────────────────────────────────
         [Serializable]
         private class ClassListWrapper
         {
             public List<ClassDefinition> Classes = new();
         }
 
-        // ─── Публичное API ────────────────────────────────────────────────────
+        // ─── Save / Load ──────────────────────────────────────────────────────────
 
-        /// <summary>Открывает вкладку редактирования тела класса. Если уже открыта — активирует.</summary>
-        public void OpenClassTab(string classId)
-        {
-            if (string.IsNullOrWhiteSpace(classId)) return;
-            var def = ClassRegistry.GetById(classId);
-            if (def == null) return;
-
-            var tabId = ClassTabPrefix + classId;
-
-            var existing = _tabs.FirstOrDefault(t => string.Equals(t.Id, tabId, StringComparison.Ordinal));
-            if (existing == null)
-            {
-                _tabs.Add(new TabDescriptor
-                {
-                    Id       = tabId,
-                    Title    = def.Name,
-                    Closable = true
-                });
-                RenderTabs();
-            }
-
-            if (!_classTabRuntimes.ContainsKey(tabId))
-                CreateClassRuntime(tabId, def);
-
-            ActivateTab(tabId);
-        }
-
-        /// <summary>Закрывает вкладку класса.</summary>
-        public void CloseClassTab(string classId) => CloseTab(ClassTabPrefix + classId);
-
-        /// <summary>Обновляет заголовок вкладки после переименования класса.</summary>
-        public void RefreshClassTabTitle(string classId, string newName)
-        {
-            var tabId = ClassTabPrefix + classId;
-            var tab = _tabs.FirstOrDefault(t => string.Equals(t.Id, tabId, StringComparison.Ordinal));
-            if (tab == null) return;
-            tab.Title = newName;
-            RenderTabs();
-        }
-
-        // ─── Сохранение / загрузка классов ───────────────────────────────────
-
-        internal void SyncAllClassRuntimes()
-        {
-            foreach (var rt in _classTabRuntimes.Values)
-                SyncClassRuntime(rt);
-        }
+        internal void SyncAllClassRuntimes() { /* no-op: классы хранятся в ClassRegistry */ }
 
         internal void SaveClassesToPath(string path)
         {
@@ -137,145 +84,146 @@ namespace CustomVisualScripting.Editor.Windows
                 Path.GetFileNameWithoutExtension(csFilePath) + ".classes.json");
         }
 
-        // ─── Создание рантайма класса ─────────────────────────────────────────
+        // ─── API совместимости (вызывается из NodeToolbarView и Tabs.cs) ──────────
 
-        private void CreateClassRuntime(string tabId, ClassDefinition def)
+        /// <summary>
+        /// В новой схеме: добавляет ClassNode на главный граф (если ещё нет) и перестраивает его.
+        /// Классовые вкладки (ClassBodyGraph) больше не открываются.
+        /// </summary>
+        public void OpenClassTab(string classId)
         {
-            var runtime = new ClassTabRuntime { Definition = def };
+            if (string.IsNullOrWhiteSpace(classId)) return;
+            AddClassNodeIfMissing(classId);
+            RecreateGraphView();
+        }
 
-            // Восстанавливаем ноды из сохранённого ClassBodyGraph
-            runtime.BodyInternalGraph = ScriptableObject.CreateInstance<BaseGraph>();
-            var bodyNodeMap = new Dictionary<string, CustomBaseNode>();
+        /// <summary>Больше не используется: классовые вкладки удалены.</summary>
+        public void CloseClassTab(string classId) { /* no-op */ }
 
-            if (def.ClassBodyGraph?.Nodes != null)
+        private void AddClassNodeIfMissing(string classId)
+        {
+            if (_currentGraph?.LogicGraph == null) return;
+            var graph = _currentGraph.LogicGraph;
+            if (graph.Nodes.Exists(n => n.Type == NodeType.ClassNode && n.Value == classId))
+                return;
+
+            var cls = ClassRegistry.GetById(classId);
+            if (cls == null) return;
+
+            float x = 60f + graph.Nodes.Count(n => n.Type == NodeType.ClassNode) * 320f;
+            graph.Nodes.Add(new NodeData
             {
-                foreach (var nd in def.ClassBodyGraph.Nodes)
-                {
-                    var cn = EditorNodeFactory.Create(nd);
-                    if (cn == null) continue;
-                    cn.NodeId = nd.Id;
-                    cn.InitializeFromData(nd);
-                    if (cn.GUID != cn.NodeId) cn.SetGUID(cn.NodeId);
-                    runtime.BodyInternalGraph.AddNode(cn);
-                    bodyNodeMap[nd.Id] = cn;
-                }
-            }
-
-            runtime.BodyGraphView = new ClassBodyGraphView(this);
-            runtime.BodyGraphView.NodeViewAdded += OnNodeViewAdded;
-            runtime.BodyGraphView.Initialize(runtime.BodyInternalGraph);
-            runtime.BodyGraphView.style.flexGrow = 1;
-            runtime.BodyGraphView.graphViewChanged += change =>
+                Id           = "classnode_" + classId,
+                Type         = NodeType.ClassNode,
+                Value        = classId,
+                VariableName = cls.Name
+            });
+            _currentGraph.VisualNodes?.Add(new Integration.Models.VisualNodeData
             {
-                SyncClassRuntime(runtime);
-                return change;
-            };
-
-            if (def.ClassBodyGraph?.Edges != null && bodyNodeMap.Count > 0)
-                GraphViewEdgeRestore.RestoreEdges(
-                    runtime.BodyGraphView, def.ClassBodyGraph.Edges,
-                    bodyNodeMap, validatePortDirections: false);
-
-            GraphDataViewSync.ApplySavedVisualLayout(def.ClassBodyGraph, runtime.BodyGraphView);
-            ConfigureNodeViewSizing(runtime.BodyGraphView.nodeViews);
-            runtime.BodyGraphView.UpdateViewTransform(Vector3.zero, Vector3.one);
-            runtime.BodyGraphView.FrameAll();
-
-            // ── Сборка контейнера ─────────────────────────────────────────────
-            var bodyArea = new VisualElement();
-            bodyArea.style.flexGrow      = 1;
-            bodyArea.style.flexDirection = FlexDirection.Column;
-            bodyArea.style.overflow      = Overflow.Hidden;
-
-            var header = BuildClassBodyHeader(def.Name);
-            header.style.height     = 32f;
-            header.style.flexShrink = 0;
-            bodyArea.Add(header);
-            bodyArea.Add(runtime.BodyGraphView);
-
-            runtime.Container = bodyArea;
-
-            // Периодический тикер синхронизации
-            runtime.SyncTicker =
-                runtime.BodyGraphView.schedule.Execute(() => SyncClassRuntime(runtime)).Every(300);
-
-            _classTabRuntimes[tabId] = runtime;
+                NodeId   = "classnode_" + classId,
+                Position = new Vector2(x, 60f)
+            });
         }
 
-        private static VisualElement BuildClassBodyHeader(string className)
+        /// <summary>Обновляет заголовок вкладки класса (если вкладка когда-либо открывалась).</summary>
+        public void RefreshClassTabTitle(string classId, string newName)
         {
-            var header = new VisualElement();
-            header.style.flexDirection   = FlexDirection.Row;
-            header.style.alignItems      = Align.Center;
-            header.style.backgroundColor = new Color(0.12f, 0.12f, 0.12f);
-            header.style.paddingLeft     = 8;
-            header.style.paddingRight    = 8;
-            header.style.paddingTop      = 4;
-            header.style.paddingBottom   = 4;
-
-            var label = new Label($"Методы класса: {className}");
-            label.style.unityFontStyleAndWeight = FontStyle.Bold;
-            label.style.fontSize = 11;
-            label.style.color    = new Color(0.4f, 1f, 0.55f); // зелёный
-            label.style.flexGrow = 1;
-            header.Add(label);
-
-            return header;
+            var tabId = ClassTabPrefix + classId;
+            var tab = _tabs.FirstOrDefault(t => string.Equals(t.Id, tabId, StringComparison.Ordinal));
+            if (tab == null) return;
+            tab.Title = newName;
+            RenderTabs();
         }
-
-        // ─── Синхронизация рантайма класса ───────────────────────────────────
-
-        private void SyncClassRuntime(ClassTabRuntime runtime)
-        {
-            if (runtime?.Definition == null) return;
-            if (runtime.BodyGraphView == null || runtime.BodyInternalGraph == null) return;
-
-            var bodyNodes = runtime.BodyInternalGraph.nodes.OfType<CustomBaseNode>().ToList();
-            GraphDataViewSync.SyncGraphDataNodesAndEdgesFromView(
-                runtime.Definition.ClassBodyGraph, bodyNodes, runtime.BodyGraphView);
-            GraphDataViewSync.SaveVisualLayoutToGraphData(
-                runtime.Definition.ClassBodyGraph, runtime.BodyInternalGraph, runtime.BodyGraphView);
-
-            _hasUnsavedChanges = true;
-        }
-
-        // ─── Удаление рантаймов ──────────────────────────────────────────────
 
         internal void DisposeClassRuntime(string tabId)
         {
-            if (!_classTabRuntimes.TryGetValue(tabId, out var runtime)) return;
-            SyncClassRuntime(runtime);
-            TearDownClassRuntimeGraph(runtime);
             _classTabRuntimes.Remove(tabId);
         }
 
         internal void DisposeAllClassRuntimes()
         {
-            foreach (var key in _classTabRuntimes.Keys.ToList())
-                DisposeClassRuntime(key);
             _classTabRuntimes.Clear();
         }
 
-        private void TearDownClassRuntimeGraph(ClassTabRuntime runtime)
+        private static void SyncClassRuntime(ClassTabRuntime runtime) { /* no-op */ }
+
+        // ─── Вспомогательный метод: RebuildMainGraphFromClasses ─────────────────
+        // Вызывается при инициализации нового проекта или OnClear,
+        // чтобы заполнить главный граф ClassNode-нодами из ClassRegistry.
+
+        internal void RebuildMainGraphWithClassNodes()
         {
-            if (runtime == null) return;
+            if (_currentGraph?.LogicGraph == null) return;
 
-            runtime.SyncTicker?.Pause();
-            runtime.SyncTicker = null;
+            var graph = _currentGraph.LogicGraph;
 
-            if (runtime.BodyGraphView != null)
+            // Убираем старые ClassNode-ноды из графа (если есть)
+            graph.Nodes.RemoveAll(n => n.Type == NodeType.ClassNode);
+            graph.Edges.RemoveAll(e =>
+                !graph.Nodes.Exists(n => n.Id == e.FromNodeId || n.Id == e.ToNodeId));
+
+            // Добавляем ClassNode для каждого класса из реестра
+            float x = 60f;
+            foreach (var cls in ClassRegistry.Classes)
             {
-                runtime.BodyGraphView.NodeViewAdded -= OnNodeViewAdded;
-                runtime.BodyGraphView.Dispose();
-                runtime.BodyGraphView = null;
-            }
-            if (runtime.BodyInternalGraph != null)
-            {
-                DestroyImmediate(runtime.BodyInternalGraph);
-                runtime.BodyInternalGraph = null;
-            }
+                // Проверяем — возможно нода уже есть (Id как ClassId)
+                if (graph.Nodes.Exists(n => n.Type == NodeType.ClassNode && n.Value == cls.Id))
+                {
+                    x += 320f;
+                    continue;
+                }
 
-            runtime.Container = null;
+                graph.Nodes.Add(new NodeData
+                {
+                    Id           = "classnode_" + cls.Id,
+                    Type         = NodeType.ClassNode,
+                    Value        = cls.Id,
+                    VariableName = cls.Name
+                });
+                _currentGraph.VisualNodes?.Add(new Integration.Models.VisualNodeData
+                {
+                    NodeId   = "classnode_" + cls.Id,
+                    Position = new Vector2(x, 60f)
+                });
+                x += 320f;
+            }
+        }
+
+        // ─── Автосоздание Program + Main при пустом реестре ──────────────────────
+
+        /// <summary>
+        /// Если ClassRegistry пуст — создаёт класс Program + метод Main
+        /// и добавляет ClassNode на главный граф.
+        /// </summary>
+        // Шаблон кода по умолчанию — отображается при первом открытии плагина
+        internal const string DefaultCodeTemplate =
+            "class Program\n{\n    public static void Main()\n    {\n        // Ваш код\n    }\n}";
+
+        internal void EnsureProgramClassExists()
+        {
+            if (ClassRegistry.Classes.Count > 0) return;
+
+            var program = new ClassDefinition { Name = "Program" };
+            ClassRegistry.Add(program);
+
+            // Стабильный ID — совпадает с тем, что создаёт парсер при разборе class-кода.
+            // Это гарантирует что при парсинге не создаётся второй метод Main.
+            var mainMethod = new Methods.MethodDefinition
+            {
+                Id         = "__classfn__Main",
+                Name       = "Main",
+                ReturnType = "void",
+                ClassId    = program.Id,
+                BodyGraph  = new GraphData(),
+                ParamGraph = new GraphData()
+            };
+            Methods.MethodRegistry.Add(mainMethod);
+
+            RebuildMainGraphWithClassNodes();
+
+            // Показываем шаблон кода в редакторе при первом открытии
+            if (_codeEditor != null && string.IsNullOrWhiteSpace(_codeEditor.Code))
+                _codeEditor.Code = DefaultCodeTemplate;
         }
     }
 }

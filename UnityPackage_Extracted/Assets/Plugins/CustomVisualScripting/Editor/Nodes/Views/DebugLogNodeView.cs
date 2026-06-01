@@ -77,34 +77,6 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             RefreshUiMode();
 
             FinishLiteralBodySetup();
-
-            schedule.Execute(HideExecInPortVisual).ExecuteLater(0);
-            schedule.Execute(HideExecInPortVisual).ExecuteLater(4);
-            schedule.Execute(HideExecInPortVisual).ExecuteLater(16);
-        }
-
-        /// <summary>
-        /// Только UI: скрываем вход потока execIn (логика графа и сериализация без изменений).
-        /// </summary>
-        private void HideExecInPortVisual()
-        {
-            if (inputPortViews == null)
-                return;
-
-            foreach (var pv in inputPortViews)
-            {
-                if (!PortIds.IsExecIn(pv.fieldName))
-                    continue;
-
-                pv.visible = false;
-                pv.style.display = DisplayStyle.None;
-                pv.style.height = 0;
-                pv.style.minHeight = 0;
-                pv.style.marginTop = 0;
-                pv.style.marginBottom = 0;
-                pv.style.paddingTop = 0;
-                pv.style.paddingBottom = 0;
-            }
         }
 
         private void RefreshUiMode()
