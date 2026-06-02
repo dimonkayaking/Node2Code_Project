@@ -10,7 +10,6 @@ const Footer: React.FC = () => {
           Техподдержка: <a href="mailto:node2code@mail.ru">node2code@mail.ru</a>
         </p>
         <div className="footer-links">
-          <Link to="/plugin">Описание плагина</Link>
           <Link to="/privacy">Политика конфиденциальности</Link>
           <Link to="/terms">Пользовательское соглашение</Link>
         </div>
