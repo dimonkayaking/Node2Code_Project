@@ -4,14 +4,53 @@
 
 ---
 
-## Установка
+## **Инструкция по установке плагина**
 
-1. Скачайте файл **Node2Code.unitypackage**.
-2. Откройте свой проект в Unity.
-3. В верхнем меню выберите **Assets → Import Package → Custom Package…**.
-4. Найдите скачанный `.unitypackage`, выберите его и нажмите **Open**.
-5. В появившемся окне убедитесь, что отмечены все файлы, и нажмите **Import**.
+### **Шаг 1: Импорт плагина**
 
+1. **Скопируйте файл** `Node2Code.unitypackage` в удобное место (например, на рабочий стол)
+
+2. **Откройте Unity проект**, в который хотите установить плагин
+
+3. **Импортируйте плагин**:
+   - В меню Unity выберите: **Assets → Import Package → Custom Package...**
+   - Или **нажмите правой кнопкой мыши** в окне Project → **Import Package → Custom Package...**
+   - Выберите файл `Node2Code.unitypackage`
+   - В открывшемся окне нажмите **Import**
+
+---
+
+### **Шаг 2: Установка GraphProcessor через Package Manager**
+
+1. В Unity откройте: **Window → Package Manager**
+
+2. Нажмите кнопку **+** (плюс) в левом верхнем углу
+
+3. Выберите **Add package from git URL...**
+
+4. Вставьте ссылку:
+   ```
+   https://github.com/Warwlock/NodeGraphProcessor.git
+   ```
+
+5. Нажмите **Instal**
+
+---
+
+### **Шаг 3: Установка Newtonsoft.Json через Package Manager**
+
+1. В Package Manager снова нажмите **+**
+
+2. Выберите **Add package by name...**
+
+3. Введите:
+   ```
+   com.unity.nuget.newtonsoft-json
+   ```
+
+4. Нажмите **Instal**
+
+---
 ![Import window](Import.png)
 
 ---
