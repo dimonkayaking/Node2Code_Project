@@ -221,9 +221,12 @@ namespace CustomVisualScripting.Editor.Windows
 
             RebuildMainGraphWithClassNodes();
 
-            // Показываем шаблон кода в редакторе при первом открытии
+            // Показываем сгенерированный код при первом открытии
             if (_codeEditor != null && string.IsNullOrWhiteSpace(_codeEditor.Code))
-                _codeEditor.Code = DefaultCodeTemplate;
+            {
+                var generated = GenerateCurrentCode();
+                _codeEditor.Code = string.IsNullOrWhiteSpace(generated) ? DefaultCodeTemplate : generated;
+            }
         }
     }
 }

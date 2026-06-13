@@ -42,6 +42,9 @@ namespace CustomVisualScripting.Integration
 
             var methodInfosById = methodList.ToDictionary(m => m.Id);
 
+            // Топологическая сортировка: родительский класс генерируется раньше дочернего
+            classList = TopologicalSortClasses(classList);
+
             var sb = new StringBuilder();
             bool first = true;
 
@@ -50,7 +53,8 @@ namespace CustomVisualScripting.Integration
                 if (!first) sb.AppendLine();
                 first = false;
 
-                sb.AppendLine($"class {cls.Name}");
+                var baseStr = string.IsNullOrEmpty(cls.BaseName) ? "" : $" : {cls.BaseName}";
+                sb.AppendLine($"class {cls.Name}{baseStr}");
                 sb.AppendLine("{");
 
                 // Статические поля
@@ -91,6 +95,42 @@ namespace CustomVisualScripting.Integration
             "string" => "\"\"",
             _        => "0"
         };
+
+        /// <summary>
+        /// Топологически сортирует классы так, чтобы родительский класс
+        /// всегда шёл раньше дочернего. Циклы разрываются с предупреждением.
+        /// </summary>
+        private static List<ClassInfo> TopologicalSortClasses(List<ClassInfo> classes)
+        {
+            var byName  = classes.ToDictionary(c => c.Name, StringComparer.Ordinal);
+            var visited = new HashSet<string>(StringComparer.Ordinal);
+            var inStack = new HashSet<string>(StringComparer.Ordinal); // цикл-защита
+            var result  = new List<ClassInfo>(classes.Count);
+
+            void Visit(ClassInfo cls)
+            {
+                if (visited.Contains(cls.Name)) return;
+                if (inStack.Contains(cls.Name))
+                {
+                    Debug.LogWarning($"[VS] Обнаружен цикл наследования: {cls.Name}");
+                    return;
+                }
+                inStack.Add(cls.Name);
+
+                if (!string.IsNullOrEmpty(cls.BaseName) &&
+                    byName.TryGetValue(cls.BaseName, out var parent))
+                    Visit(parent);
+
+                inStack.Remove(cls.Name);
+                visited.Add(cls.Name);
+                result.Add(cls);
+            }
+
+            foreach (var cls in classes)
+                Visit(cls);
+
+            return result;
+        }
 
         /// <summary>Генерирует код только из основного графа (без пользовательских методов).</summary>
         public static string Generate(GraphData graph)

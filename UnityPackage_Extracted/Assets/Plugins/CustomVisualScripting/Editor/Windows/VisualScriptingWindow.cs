@@ -250,6 +250,15 @@ namespace CustomVisualScripting.Editor.Windows
                     classMap[parsedClass.Name] = def;
                 }
 
+                // 1b. Синхронизируем BaseClassId: разрешаем имя родителя → его ClassDefinition.Id
+                foreach (var parsedClass in result.DiscoveredClasses)
+                {
+                    if (string.IsNullOrEmpty(parsedClass.BaseClassName)) continue;
+                    if (!classMap.TryGetValue(parsedClass.Name, out var childDef)) continue;
+                    if (!classMap.TryGetValue(parsedClass.BaseClassName, out var parentDef)) continue;
+                    childDef.BaseClassId = parentDef.Id;
+                }
+
                 // 2. Строим маппинг: имя метода → имя класса
                 var methodToClass = new Dictionary<string, string>(StringComparer.Ordinal);
                 foreach (var parsedClass in result.DiscoveredClasses)
@@ -684,14 +693,29 @@ namespace CustomVisualScripting.Editor.Windows
         private static IEnumerable<ClassInfo> ToClassInfos(IEnumerable<ClassDefinition> defs)
         {
             if (defs == null) yield break;
-            foreach (var c in defs)
+            var list = defs.ToList();
+            var byId = list
+                .Where(c => c != null && !string.IsNullOrWhiteSpace(c.Id))
+                .ToDictionary(c => c.Id, StringComparer.Ordinal);
+
+            foreach (var c in list)
             {
                 if (c == null || string.IsNullOrWhiteSpace(c.Id)) continue;
+
+                // Разрешаем имя родителя: пользовательский класс → MonoBehaviour → ничего
+                string baseName = "";
+                if (!string.IsNullOrEmpty(c.BaseClassId) &&
+                    byId.TryGetValue(c.BaseClassId, out var parentDef))
+                    baseName = parentDef.Name;
+                else if (c.InheritsMonoBehaviour)
+                    baseName = "MonoBehaviour";
+
                 yield return new ClassInfo
                 {
-                    Id     = c.Id,
-                    Name   = c.Name,
-                    Fields = c.Fields?.ConvertAll(f => new ClassFieldData
+                    Id       = c.Id,
+                    Name     = c.Name,
+                    BaseName = baseName,
+                    Fields   = c.Fields?.ConvertAll(f => new ClassFieldData
                     {
                         Name         = f.Name,
                         Type         = f.Type,

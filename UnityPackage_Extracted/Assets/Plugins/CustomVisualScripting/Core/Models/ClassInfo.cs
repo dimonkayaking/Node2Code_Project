@@ -7,6 +7,8 @@ namespace VisualScripting.Core.Models
     {
         public string Id;
         public string Name;
+        /// <summary>Имя родительского класса. Пусто — нет родителя.</summary>
+        public string BaseName = "";
         public List<ClassFieldData> Fields = new();
     }
 

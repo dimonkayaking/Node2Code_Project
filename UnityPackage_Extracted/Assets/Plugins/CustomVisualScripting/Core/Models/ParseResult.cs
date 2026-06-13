@@ -15,9 +15,11 @@ namespace VisualScripting.Core.Parsers
     /// <summary>Информация об одном классе, обнаруженном при парсинге.</summary>
     public class ParsedClassInfo
     {
-        public string             Name        = "";
-        public List<string>       MethodNames = new List<string>();
-        public List<ParsedFieldInfo> Fields   = new List<ParsedFieldInfo>();
+        public string             Name          = "";
+        /// <summary>Имя родительского класса из синтаксиса <c>: BaseClass</c>. Пусто — нет родителя.</summary>
+        public string             BaseClassName = "";
+        public List<string>       MethodNames   = new List<string>();
+        public List<ParsedFieldInfo> Fields      = new List<ParsedFieldInfo>();
     }
 
     public class ParseResult

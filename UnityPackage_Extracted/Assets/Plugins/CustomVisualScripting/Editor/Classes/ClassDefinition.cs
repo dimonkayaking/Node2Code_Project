@@ -28,6 +28,12 @@ namespace CustomVisualScripting.Editor.Classes
         public string Id;
         public string Name;
 
+        /// <summary>Id родительского класса (ClassDefinition.Id). Пусто — нет родителя.</summary>
+        public string BaseClassId = "";
+
+        /// <summary>Наследуется ли класс от MonoBehaviour. true по умолчанию; игнорируется при наличии BaseClassId.</summary>
+        public bool InheritsMonoBehaviour = true;
+
         /// <summary>Статические поля класса.</summary>
         public List<FieldDefinition> Fields = new();
 

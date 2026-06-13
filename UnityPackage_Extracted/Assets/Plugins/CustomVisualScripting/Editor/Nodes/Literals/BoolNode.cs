@@ -36,15 +36,13 @@ namespace CustomVisualScripting.Editor.Nodes.Literals
         [CustomPortBehavior(nameof(execIn))]
         IEnumerable<PortData> GetExecInBehavior(List<SerializableEdge> edges)
         {
-            if (IsStatementRootNode())
-                yield return new PortData { identifier = "execIn", displayName = "Exec In", acceptMultipleEdges = false };
+            yield return new PortData { identifier = "execIn", displayName = "Exec In", acceptMultipleEdges = false };
         }
 
         [CustomPortBehavior(nameof(execOut))]
         IEnumerable<PortData> GetExecOutBehavior(List<SerializableEdge> edges)
         {
-            if (IsStatementRootNode())
-                yield return new PortData { identifier = "execOut", displayName = "Exec Out", acceptMultipleEdges = false };
+            yield return new PortData { identifier = "execOut", displayName = "Exec Out", acceptMultipleEdges = false };
         }
 
         protected override void Process()

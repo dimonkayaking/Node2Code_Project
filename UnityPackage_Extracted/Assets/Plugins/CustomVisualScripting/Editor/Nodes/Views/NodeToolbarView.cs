@@ -33,13 +33,17 @@ namespace CustomVisualScripting.Editor.Nodes.Views
 
         private static readonly Color MethodColor = HexColor("#00BCD4");
         private static readonly Color ClassColor  = HexColor("#4CAF50"); // зелёный — категория «Классы»
+        private static readonly Color FieldColor  = HexColor("#FF9800"); // оранжевый — категория «Поля»
 
         // Состояние текущего экрана
         private bool _showingMethodsCategory;
         private bool _showingClassesCategory;
+        private bool _showingFieldsCategory;
 
         // Развёрнутые классы в панели методов (по ClassId)
         private readonly HashSet<string> _expandedClassIds = new(StringComparer.Ordinal);
+        // Развёрнутые классы в панели полей (по ClassId)
+        private readonly HashSet<string> _expandedClassIdsForFields = new(StringComparer.Ordinal);
 
         public NodeToolbarView(BaseGraphView graphView)
         {
@@ -117,6 +121,7 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         {
             _showingMethodsCategory = false;
             _showingClassesCategory = false;
+            _showingFieldsCategory  = false;
             _contentContainer.Clear();
 
             switch (GetCurrentContext())
@@ -149,6 +154,8 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         {
             // Категория «Методы» — циановая
             _contentContainer.Add(CreateMethodsCategoryButton());
+            // Категория «Поля» — оранжевая
+            _contentContainer.Add(CreateFieldsCategoryButton());
 
             // Разделитель
             var sep = new VisualElement();
@@ -310,6 +317,8 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         {
             if (_showingClassesCategory)
                 ShowClassesCategory();
+            else if (_showingFieldsCategory)
+                ShowFieldsCategory();
             else
                 ShowCategories();
         }
@@ -660,6 +669,233 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             int n = 1;
             while (existing.Contains($"MyMethod{n}")) n++;
             return $"MyMethod{n}";
+        }
+
+        // ─── Кнопка категории полей ───────────────────────────────────────────
+
+        private VisualElement CreateFieldsCategoryButton()
+        {
+            int count = ClassRegistry.Classes.Sum(c => c.Fields?.Count ?? 0);
+            var btn = new Button(ShowFieldsCategory);
+            btn.text = count > 0 ? $"Поля  ({count})" : "Поля";
+            StyleCategoryButton(btn, FieldColor);
+            return btn;
+        }
+
+        // ─── Экран полей ──────────────────────────────────────────────────────
+
+        private void ShowFieldsCategory()
+        {
+            _showingFieldsCategory  = true;
+            _showingMethodsCategory = false;
+            _showingClassesCategory = false;
+            _contentContainer.Clear();
+
+            var backBtn = new Button(ShowCategories) { text = "← Назад" };
+            StyleBackButton(backBtn);
+            _contentContainer.Add(backBtn);
+
+            var titleLbl = new Label("Поля");
+            titleLbl.style.fontSize               = 13;
+            titleLbl.style.unityFontStyleAndWeight = FontStyle.Bold;
+            titleLbl.style.color                   = FieldColor;
+            titleLbl.style.paddingBottom           = 6;
+            titleLbl.style.marginBottom            = 6;
+            titleLbl.style.borderBottomWidth       = 1;
+            titleLbl.style.borderBottomColor       = new Color(0.3f, 0.3f, 0.3f);
+            titleLbl.style.unityTextAlign          = TextAnchor.MiddleCenter;
+            _contentContainer.Add(titleLbl);
+
+            var classes = ClassRegistry.Classes;
+            if (classes.Count == 0)
+            {
+                var hint = new Label("  Сначала создайте класс");
+                hint.style.color    = new Color(0.5f, 0.5f, 0.5f);
+                hint.style.fontSize = 11;
+                _contentContainer.Add(hint);
+                return;
+            }
+
+            foreach (var cls in classes)
+            {
+                var fields = cls.Fields ?? new System.Collections.Generic.List<FieldDefinition>();
+                _contentContainer.Add(BuildFieldsClassGroupHeader(cls.Id, cls.Name, fields.Count));
+
+                if (_expandedClassIdsForFields.Contains(cls.Id))
+                {
+                    foreach (var field in fields)
+                        _contentContainer.Add(BuildFieldRow(cls, field));
+                }
+            }
+        }
+
+        // ─── Заголовок группы класса (для полей) ─────────────────────────────
+
+        private VisualElement BuildFieldsClassGroupHeader(string classId, string className, int fieldCount)
+        {
+            bool expanded = _expandedClassIdsForFields.Contains(classId);
+
+            var row = new VisualElement();
+            row.style.flexDirection   = FlexDirection.Row;
+            row.style.alignItems      = Align.Center;
+            row.style.marginTop       = 4;
+            row.style.marginBottom    = 2;
+            row.style.paddingLeft     = 4;
+            row.style.paddingRight    = 4;
+            row.style.paddingTop      = 4;
+            row.style.paddingBottom   = 4;
+            row.style.backgroundColor = new Color(0.20f, 0.20f, 0.20f);
+            row.style.borderTopLeftRadius     = 3;
+            row.style.borderTopRightRadius    = 3;
+            row.style.borderBottomLeftRadius  = expanded ? 0 : 3;
+            row.style.borderBottomRightRadius = expanded ? 0 : 3;
+
+            // Кнопка + / −
+            string toggleIcon = expanded ? "−" : "+";
+            var toggleBtn = new Button(() =>
+            {
+                if (_expandedClassIdsForFields.Contains(classId))
+                    _expandedClassIdsForFields.Remove(classId);
+                else
+                    _expandedClassIdsForFields.Add(classId);
+                ShowFieldsCategory();
+            });
+            toggleBtn.text                  = toggleIcon;
+            toggleBtn.style.width           = 22;
+            toggleBtn.style.height          = 22;
+            toggleBtn.style.fontSize        = 14;
+            toggleBtn.style.paddingLeft     = 0;
+            toggleBtn.style.paddingRight    = 0;
+            toggleBtn.style.paddingTop      = 0;
+            toggleBtn.style.paddingBottom   = 0;
+            toggleBtn.style.marginRight     = 6;
+            toggleBtn.style.flexShrink      = 0;
+            toggleBtn.style.backgroundColor = new Color(0.28f, 0.28f, 0.28f);
+            toggleBtn.style.unityTextAlign  = TextAnchor.MiddleCenter;
+            ApplyBorder(toggleBtn, FieldColor);
+            row.Add(toggleBtn);
+
+            // Название класса
+            var nameLabel = new Label($"{className}  ({fieldCount})");
+            nameLabel.style.fontSize               = 12;
+            nameLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
+            nameLabel.style.color                   = FieldColor;
+            nameLabel.style.flexGrow                = 1;
+            nameLabel.style.textOverflow            = TextOverflow.Ellipsis;
+            nameLabel.style.overflow                = Overflow.Hidden;
+            nameLabel.style.whiteSpace              = WhiteSpace.NoWrap;
+            row.Add(nameLabel);
+
+            // Кнопка «+ Поле»
+            var addBtn = new Button(() => OnAddFieldToClassClicked(classId)) { text = "+ Поле" };
+            addBtn.tooltip               = $"Добавить поле в класс {className}";
+            addBtn.style.fontSize        = 10;
+            addBtn.style.paddingLeft     = 4;
+            addBtn.style.paddingRight    = 4;
+            addBtn.style.paddingTop      = 2;
+            addBtn.style.paddingBottom   = 2;
+            addBtn.style.marginLeft      = 4;
+            addBtn.style.flexShrink      = 0;
+            addBtn.style.backgroundColor = new Color(0.22f, 0.22f, 0.22f);
+            ApplyBorder(addBtn, FieldColor);
+            row.Add(addBtn);
+
+            return row;
+        }
+
+        private VisualElement BuildFieldRow(ClassDefinition cls, FieldDefinition field)
+        {
+            var row = new VisualElement();
+            row.style.flexDirection   = FlexDirection.Row;
+            row.style.alignItems      = Align.Center;
+            row.style.marginTop       = 0;
+            row.style.marginBottom    = 1;
+            row.style.paddingLeft     = 10; // визуальная вложенность
+
+            // Метка «тип  имя»
+            var infoBtn = new Button();
+            infoBtn.text                  = $"{field.Type}  {field.Name}";
+            infoBtn.tooltip               = $"{field.Type} {field.Name}" + (string.IsNullOrEmpty(field.DefaultValue) ? "" : $" = {field.DefaultValue}");
+            infoBtn.style.flexGrow        = 1;
+            infoBtn.style.fontSize        = 12;
+            infoBtn.style.paddingTop      = 5;
+            infoBtn.style.paddingBottom   = 5;
+            infoBtn.style.paddingLeft     = 8;
+            infoBtn.style.backgroundColor = new Color(0.23f, 0.23f, 0.23f);
+            infoBtn.style.unityTextAlign  = TextAnchor.MiddleLeft;
+            infoBtn.style.textOverflow    = TextOverflow.Ellipsis;
+            infoBtn.style.overflow        = Overflow.Hidden;
+            infoBtn.style.whiteSpace      = WhiteSpace.NoWrap;
+            ApplyBorder(infoBtn, new Color(0.6f, 0.45f, 0.1f));
+            row.Add(infoBtn);
+
+            // Кнопка «✎ редактировать»
+            var editBtn = new Button(() => OnEditFieldInPanelClicked(cls, field)) { text = "✎" };
+            editBtn.tooltip               = "Редактировать";
+            editBtn.style.width           = 24;
+            editBtn.style.fontSize        = 11;
+            editBtn.style.paddingLeft     = 0;
+            editBtn.style.paddingRight    = 0;
+            editBtn.style.marginLeft      = 2;
+            editBtn.style.backgroundColor = new Color(0.25f, 0.25f, 0.25f);
+            ApplyBorder(editBtn, new Color(0.5f, 0.5f, 0.5f));
+            row.Add(editBtn);
+
+            // Кнопка «✕ удалить»
+            var delBtn = new Button(() => OnDeleteFieldClicked(cls.Id, field.Id)) { text = "✕" };
+            delBtn.tooltip               = "Удалить";
+            delBtn.style.width           = 24;
+            delBtn.style.fontSize        = 11;
+            delBtn.style.paddingLeft     = 0;
+            delBtn.style.paddingRight    = 0;
+            delBtn.style.marginLeft      = 2;
+            delBtn.style.backgroundColor = new Color(0.3f, 0.15f, 0.15f);
+            ApplyBorder(delBtn, new Color(0.8f, 0.3f, 0.3f));
+            row.Add(delBtn);
+
+            return row;
+        }
+
+        // ─── Обработчики полей ────────────────────────────────────────────────
+
+        private void OnFieldsChanged()
+        {
+            if (_showingFieldsCategory)
+                ShowFieldsCategory();
+            else
+                ShowCategories();
+        }
+
+        private void OnAddFieldToClassClicked(string classId)
+        {
+            FieldEditPopup.ShowCreate(classId, newField =>
+            {
+                var def = ClassRegistry.GetById(classId);
+                if (def == null) return;
+                if (def.Fields == null) def.Fields = new System.Collections.Generic.List<FieldDefinition>();
+                def.Fields.Add(newField);
+                ClassRegistry.Update(def);
+            });
+        }
+
+        private void OnEditFieldInPanelClicked(ClassDefinition cls, FieldDefinition field)
+        {
+            FieldEditPopup.ShowEdit(field, _ => ClassRegistry.Update(cls));
+        }
+
+        private void OnDeleteFieldClicked(string classId, string fieldId)
+        {
+            var cls = ClassRegistry.GetById(classId);
+            if (cls == null) return;
+            var field = cls.Fields?.FirstOrDefault(f => f.Id == fieldId);
+            if (field == null) return;
+            bool ok = EditorUtility.DisplayDialog(
+                "Удалить поле",
+                $"Удалить поле «{field.Name}» из класса «{cls.Name}»?",
+                "Удалить", "Отмена");
+            if (!ok) return;
+            cls.Fields.RemoveAll(f => f.Id == fieldId);
+            ClassRegistry.Update(cls);
         }
 
         // ─── Создание call-ноды метода ────────────────────────────────────────

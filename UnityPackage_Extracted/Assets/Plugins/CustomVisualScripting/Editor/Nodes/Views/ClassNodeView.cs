@@ -26,6 +26,7 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         private static readonly Color FieldNameColor    = new Color(0.92f, 0.92f, 0.92f);
         private static readonly Color MethodSigColor    = new Color(0.75f, 1.00f, 0.82f);
         private static readonly Color RemoveBtnColor    = new Color(1.00f, 0.40f, 0.40f);
+        private static readonly Color InheritanceColor  = new Color(1.00f, 0.85f, 0.40f);
 
         private ClassNode _node;
 
@@ -103,6 +104,10 @@ namespace CustomVisualScripting.Editor.Nodes.Views
                 .Where(m => string.Equals(m.ClassId, _node.ClassId, StringComparison.Ordinal))
                 .ToList();
 
+            // ── Наследование ─────────────────────────────────────────────────
+            extensionContainer.Add(MakeSectionHeader("Наследование", InheritanceColor));
+            extensionContainer.Add(MakeInheritanceRow(def));
+
             // ── Поля ─────────────────────────────────────────────────────────
             extensionContainer.Add(MakeSectionHeader("Поля", FieldTypeColor));
 
@@ -123,6 +128,92 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         }
 
         // ─── Row builders ────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Строит строку наследования: "extends ParentName [✎] [✕]"
+        /// или кнопку "Установить родителя" если родителя нет.
+        /// </summary>
+        private VisualElement MakeInheritanceRow(ClassDefinition def)
+        {
+            var row = new VisualElement();
+            row.style.flexDirection = FlexDirection.Row;
+            row.style.alignItems    = Align.Center;
+            row.style.paddingLeft   = 8;
+            row.style.paddingRight  = 4;
+            row.style.paddingTop    = 3;
+            row.style.paddingBottom = 3;
+
+            var parentDef = string.IsNullOrEmpty(def?.BaseClassId)
+                ? null
+                : ClassRegistry.GetById(def.BaseClassId);
+
+            if (parentDef != null)
+            {
+                // Пользовательский родительский класс
+                var label = new Label($"extends  {parentDef.Name}");
+                label.style.color                   = InheritanceColor;
+                label.style.fontSize                = 10;
+                label.style.unityFontStyleAndWeight = FontStyle.Italic;
+                label.style.flexGrow                = 1;
+
+                var editBtn = new Button(OnChangeParentClicked) { text = "✎" };
+                editBtn.style.fontSize   = 9;
+                editBtn.style.width      = 20;
+                editBtn.style.height     = 18;
+                editBtn.style.marginLeft = 2;
+
+                var clearBtn = new Button(OnClearParentClicked) { text = "✕" };
+                clearBtn.style.fontSize = 9;
+                clearBtn.style.color    = RemoveBtnColor;
+                clearBtn.style.width    = 20;
+                clearBtn.style.height   = 18;
+
+                row.Add(label);
+                row.Add(editBtn);
+                row.Add(clearBtn);
+            }
+            else if (def?.InheritsMonoBehaviour == true)
+            {
+                // MonoBehaviour (по умолчанию)
+                var label = new Label("extends  MonoBehaviour");
+                label.style.color                   = InheritanceColor;
+                label.style.fontSize                = 10;
+                label.style.unityFontStyleAndWeight = FontStyle.Italic;
+                label.style.flexGrow                = 1;
+
+                var editBtn = new Button(OnChangeParentClicked) { text = "✎" };
+                editBtn.tooltip          = "Редактировать класс";
+                editBtn.style.fontSize   = 9;
+                editBtn.style.width      = 20;
+                editBtn.style.height     = 18;
+                editBtn.style.marginLeft = 2;
+
+                var clearBtn = new Button(OnClearMonoBehaviourClicked) { text = "✕" };
+                clearBtn.tooltip    = "Отключить наследование MonoBehaviour";
+                clearBtn.style.fontSize = 9;
+                clearBtn.style.color    = RemoveBtnColor;
+                clearBtn.style.width    = 20;
+                clearBtn.style.height   = 18;
+
+                row.Add(label);
+                row.Add(editBtn);
+                row.Add(clearBtn);
+            }
+            else
+            {
+                // Нет родителя
+                var setBtn = new Button(OnChangeParentClicked) { text = "+ Установить родителя" };
+                setBtn.style.fontSize     = 10;
+                setBtn.style.marginLeft   = 0;
+                setBtn.style.marginRight  = 6;
+                setBtn.style.marginTop    = 1;
+                setBtn.style.marginBottom = 1;
+                setBtn.style.flexGrow     = 1;
+                row.Add(setBtn);
+            }
+
+            return row;
+        }
 
         private static VisualElement MakeSectionHeader(string text, Color accent)
         {
@@ -222,6 +313,29 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         }
 
         // ─── Handlers ────────────────────────────────────────────────────────
+
+        private void OnChangeParentClicked()
+        {
+            var def = ClassRegistry.GetById(_node.ClassId);
+            if (def == null) return;
+            CreateClassPopup.ShowEdit(def, updated => ClassRegistry.Update(updated));
+        }
+
+        private void OnClearParentClicked()
+        {
+            var def = ClassRegistry.GetById(_node.ClassId);
+            if (def == null) return;
+            def.BaseClassId = "";
+            ClassRegistry.Update(def);
+        }
+
+        private void OnClearMonoBehaviourClicked()
+        {
+            var def = ClassRegistry.GetById(_node.ClassId);
+            if (def == null) return;
+            def.InheritsMonoBehaviour = false;
+            ClassRegistry.Update(def);
+        }
 
         private void OnRenameClicked()
         {

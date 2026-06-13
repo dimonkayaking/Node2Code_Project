@@ -221,6 +221,11 @@ namespace VisualScripting.Core.Parsers
             {
                 var info = new ParsedClassInfo { Name = classDecl.Identifier.Text };
 
+                // Извлекаем имя родительского класса из синтаксиса `: BaseClass`
+                var baseType = classDecl.BaseList?.Types.FirstOrDefault();
+                if (baseType != null)
+                    info.BaseClassName = baseType.Type.ToString().Trim();
+
                 // Методы
                 foreach (var m in classDecl.Members.OfType<MethodDeclarationSyntax>())
                     info.MethodNames.Add(m.Identifier.Text);

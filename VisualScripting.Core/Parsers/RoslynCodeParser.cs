@@ -32,6 +32,11 @@ namespace VisualScripting.Core.Parsers
         // Нужно, чтобы FormatUserLocation показывал позиции относительно исходного файла (п.4).
         private int _userCodeLineOffset;
 
+        // Структура классов, обнаруженная при StripClassWrapper
+        private bool _hasClassWrapper;
+        private string _mainClassName = "";
+        private List<ParsedClassInfo> _discoveredClasses = new List<ParsedClassInfo>();
+
         // Лимит глубины рекурсии VisitExpression — защита от StackOverflow на
         // патологически глубоко вложенных выражениях (п.7).
         private int _expressionDepth;
@@ -148,6 +153,9 @@ namespace VisualScripting.Core.Parsers
             _semanticModel = null;
             _userCodeLineOffset = 0;
             _expressionDepth = 0;
+            _hasClassWrapper   = false;
+            _mainClassName     = "";
+            _discoveredClasses = new List<ParsedClassInfo>();
 
             if (string.IsNullOrWhiteSpace(code))
             {
@@ -202,8 +210,14 @@ namespace VisualScripting.Core.Parsers
             return Result();
         }
 
-        private ParseResult Result() =>
-            new ParseResult { Graph = _graph, Errors = _errors };
+        private ParseResult Result() => new ParseResult
+        {
+            Graph             = _graph,
+            Errors            = _errors,
+            HasClassWrapper   = _hasClassWrapper,
+            MainClassName     = _mainClassName,
+            DiscoveredClasses = _discoveredClasses
+        };
 
         /// <summary>
         /// Если <paramref name="code"/> содержит top-level объявление класса/namespace,
@@ -223,6 +237,39 @@ namespace VisualScripting.Core.Parsers
 
             if (!HasTopLevelTypeDeclaration(rawRoot))
                 return code;
+
+            _hasClassWrapper = true;
+
+            // Собираем структуру классов (методы + поля + базовый класс)
+            foreach (var classDecl in rawRoot.DescendantNodes().OfType<ClassDeclarationSyntax>())
+            {
+                var info = new ParsedClassInfo { Name = classDecl.Identifier.Text };
+
+                var baseType = classDecl.BaseList?.Types.FirstOrDefault();
+                if (baseType != null)
+                    info.BaseClassName = baseType.Type.ToString().Trim();
+
+                foreach (var m in classDecl.Members.OfType<MethodDeclarationSyntax>())
+                    info.MethodNames.Add(m.Identifier.Text);
+
+                foreach (var fieldDecl in classDecl.Members.OfType<FieldDeclarationSyntax>())
+                {
+                    var rawType = fieldDecl.Declaration.Type.ToString().Trim();
+                    foreach (var variable in fieldDecl.Declaration.Variables)
+                    {
+                        info.Fields.Add(new ParsedFieldInfo
+                        {
+                            Name         = variable.Identifier.Text,
+                            Type         = rawType,
+                            DefaultValue = variable.Initializer?.Value?.ToString().Trim() ?? ""
+                        });
+                    }
+                }
+
+                _discoveredClasses.Add(info);
+                if (info.MethodNames.Contains("Main"))
+                    _mainClassName = info.Name;
+            }
 
             // Сначала пробуем метод с именем Main, затем любой первый метод
             var methodBody = rawRoot.DescendantNodes()
