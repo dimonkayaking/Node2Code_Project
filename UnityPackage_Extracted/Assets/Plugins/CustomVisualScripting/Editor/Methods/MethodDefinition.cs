@@ -19,6 +19,11 @@ namespace CustomVisualScripting.Editor.Methods
         public string Name;
         public string ReturnType = "void"; // "void" | "int" | "float" | "bool" | "string"
 
+        /// <summary>public (true) или private (false).</summary>
+        public bool IsPublic = true;
+        /// <summary>static (true) или instance/нестатический (false).</summary>
+        public bool IsStatic = false;
+
         /// <summary>Id класса-владельца. Пустая строка — метод не привязан к классу (legacy).</summary>
         public string ClassId = "";
 
@@ -35,7 +40,8 @@ namespace CustomVisualScripting.Editor.Methods
         public string Signature()
         {
             var pars = string.Join(", ", Parameters.ConvertAll(p => $"{p.Type} {p.Name}"));
-            return $"{ReturnType} {Name}({pars})";
+            var staticStr = IsStatic ? "static " : "";
+            return $"{staticStr}{ReturnType} {Name}({pars})";
         }
     }
 }

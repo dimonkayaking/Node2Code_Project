@@ -25,6 +25,33 @@ namespace CustomVisualScripting.Editor.Windows
         private readonly Dictionary<string, MethodTabRuntime> _methodTabRuntimes =
             new(StringComparer.Ordinal);
 
+        // Подпространство (if/for/while-тело) → Id метода-владельца. Нужно панели «Поля»/«Методы»
+        // для фильтрации по контексту метода при редактировании во вложенном подпространстве.
+        private readonly Dictionary<string, string> _subspaceRootMethodId =
+            new(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Возвращает <see cref="MethodDefinition"/> метода, тело которого сейчас редактируется
+        /// (вкладка метода или вложенное в неё подпространство), либо null (файл/класс-вкладка).
+        /// Используется панелью инструментов для C#-корректной фильтрации полей/методов.
+        /// </summary>
+        public MethodDefinition GetActiveMethodContext()
+        {
+            var methodId = GetRootMethodIdOfTab(_activeTabId);
+            return string.IsNullOrEmpty(methodId) ? null : MethodRegistry.GetById(methodId);
+        }
+
+        /// <summary>Id метода-владельца для вкладки: сама вкладка метода или корень подпространства.</summary>
+        private string GetRootMethodIdOfTab(string tabId)
+        {
+            if (string.IsNullOrEmpty(tabId)) return "";
+            if (tabId.StartsWith(MethodTabPrefix, StringComparison.Ordinal))
+                return tabId.Substring(MethodTabPrefix.Length);
+            if (_subspaceRootMethodId.TryGetValue(tabId, out var rootId))
+                return rootId;
+            return "";
+        }
+
         private sealed class MethodTabRuntime
         {
             public MethodDefinition Definition;
@@ -591,6 +618,8 @@ namespace CustomVisualScripting.Editor.Windows
                 {
                     existing.Name       = mi.Name;
                     existing.ReturnType = mi.ReturnType ?? "void";
+                    existing.IsPublic   = mi.IsPublic;
+                    existing.IsStatic   = mi.IsStatic;
                     existing.Parameters = BuildParamDefs(mi);
                     if (!string.IsNullOrEmpty(mi.ClassId))
                         existing.ClassId = mi.ClassId;
@@ -605,6 +634,8 @@ namespace CustomVisualScripting.Editor.Windows
                         Id         = mi.Id,
                         Name       = mi.Name,
                         ReturnType = mi.ReturnType ?? "void",
+                        IsPublic   = mi.IsPublic,
+                        IsStatic   = mi.IsStatic,
                         ClassId    = mi.ClassId ?? "",
                         Parameters = BuildParamDefs(mi),
                         BodyGraph  = mi.BodyGraph ?? new GraphData(),
@@ -622,10 +653,11 @@ namespace CustomVisualScripting.Editor.Windows
         // ─── Поля класса в теле метода ───────────────────────────────────────
 
         /// <summary>
-        /// Синхронизирует ноды-ссылки на статические поля класса в body-графе метода.
-        /// Для каждого поля из <see cref="ClassDefinition.Fields"/> добавляется
-        /// <see cref="Nodes.Methods.FieldRefNode"/> со стабильным ID <c>"_fieldref_" + field.Id</c>.
-        /// Поля, которых больше нет, — удаляются.
+        /// Синхронизирует уже существующие в body-графе ноды-ссылки на поля класса:
+        /// обновляет тип/имя по <see cref="ClassDefinition.Fields"/>, перепривязывает
+        /// парсер-инжектированные ноды (с пустым FieldId) по имени и удаляет ноды для
+        /// полей, которых больше нет. Новые ноды НЕ создаются автоматически —
+        /// пользователь добавляет их вручную через панель «Поля».
         /// </summary>
         private void SyncBodyFieldReferences(MethodTabRuntime runtime)
         {
@@ -719,30 +751,10 @@ namespace CustomVisualScripting.Editor.Windows
                 }
             }
 
-            // Добавляем ноды только для полей, которых ещё нет
-            int count = existingRefs.Count(n => currentIds.Contains(n.FieldId));
-            for (int i = 0; i < classFields.Count; i++)
-            {
-                var field = classFields[i];
-                if (existingById.ContainsKey(field.Id)) continue;
-
-                var fn = new Nodes.Methods.FieldRefNode
-                {
-                    FieldId   = field.Id,
-                    FieldName = field.Name,
-                    FieldType = field.Type
-                };
-                fn.NodeId = "_fieldref_" + field.Id;
-                fn.SetGUID(fn.NodeId);
-                fn.position = new UnityEngine.Rect(260f, 40f + count * 120f, 200f, 80f);
-                count++;
-
-                try   { runtime.BodyGraphView.AddNode(fn); }
-                catch (Exception ex)
-                {
-                    UnityEngine.Debug.LogWarning($"[VS] SyncBodyFieldRefs AddNode: {ex.Message}");
-                }
-            }
+            // НЕ авто-инжектируем ноды для полей, которых ещё нет в графе.
+            // Ноды полей пользователь добавляет вручную через панель «Поля».
+            // Здесь только синхронизируем/чистим уже существующие (парсер-инжектированные
+            // при загрузке кода и добавленные пользователем) ноды.
         }
 
         private static List<ParameterDefinition> BuildParamDefs(MethodInfo mi)

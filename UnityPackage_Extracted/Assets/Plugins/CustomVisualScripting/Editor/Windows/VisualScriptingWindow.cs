@@ -234,6 +234,8 @@ namespace CustomVisualScripting.Editor.Windows
                         {
                             ef.Type         = pf.Type;
                             ef.DefaultValue = pf.DefaultValue;
+                            ef.IsPublic     = pf.IsPublic;
+                            ef.IsStatic     = pf.IsStatic;
                             def.Fields.Add(ef);
                         }
                         else
@@ -242,7 +244,9 @@ namespace CustomVisualScripting.Editor.Windows
                             {
                                 Name         = pf.Name,
                                 Type         = pf.Type,
-                                DefaultValue = pf.DefaultValue
+                                DefaultValue = pf.DefaultValue,
+                                IsPublic     = pf.IsPublic,
+                                IsStatic     = pf.IsStatic
                             });
                         }
                     }
@@ -250,13 +254,26 @@ namespace CustomVisualScripting.Editor.Windows
                     classMap[parsedClass.Name] = def;
                 }
 
-                // 1b. Синхронизируем BaseClassId: разрешаем имя родителя → его ClassDefinition.Id
+                // 1b. Синхронизируем наследование из кода:
+                //   • родитель — пользовательский класс  → BaseClassId, MonoBehaviour выкл.
+                //   • base == "MonoBehaviour"             → InheritsMonoBehaviour вкл.
+                //   • нет base                            → корневой класс.
                 foreach (var parsedClass in result.DiscoveredClasses)
                 {
-                    if (string.IsNullOrEmpty(parsedClass.BaseClassName)) continue;
                     if (!classMap.TryGetValue(parsedClass.Name, out var childDef)) continue;
-                    if (!classMap.TryGetValue(parsedClass.BaseClassName, out var parentDef)) continue;
-                    childDef.BaseClassId = parentDef.Id;
+
+                    if (!string.IsNullOrEmpty(parsedClass.BaseClassName) &&
+                        classMap.TryGetValue(parsedClass.BaseClassName, out var parentDef))
+                    {
+                        childDef.BaseClassId           = parentDef.Id;
+                        childDef.InheritsMonoBehaviour = false;
+                    }
+                    else
+                    {
+                        childDef.BaseClassId           = "";
+                        childDef.InheritsMonoBehaviour = string.Equals(
+                            parsedClass.BaseClassName, "MonoBehaviour", StringComparison.Ordinal);
+                    }
                 }
 
                 // 2. Строим маппинг: имя метода → имя класса
@@ -719,7 +736,9 @@ namespace CustomVisualScripting.Editor.Windows
                     {
                         Name         = f.Name,
                         Type         = f.Type,
-                        DefaultValue = f.DefaultValue
+                        DefaultValue = f.DefaultValue,
+                        IsPublic     = f.IsPublic,
+                        IsStatic     = f.IsStatic
                     }) ?? new System.Collections.Generic.List<ClassFieldData>()
                 };
             }
@@ -736,6 +755,8 @@ namespace CustomVisualScripting.Editor.Windows
                     Id            = m.Id,
                     Name          = m.Name,
                     ReturnType    = m.ReturnType ?? "void",
+                    IsPublic      = m.IsPublic,
+                    IsStatic      = m.IsStatic,
                     ClassId       = m.ClassId    ?? "",
                     ClassName     = ClassRegistry.GetById(m.ClassId)?.Name ?? "",
                     ParamNames    = m.Parameters?.ConvertAll(p => p.Name)         ?? new System.Collections.Generic.List<string>(),

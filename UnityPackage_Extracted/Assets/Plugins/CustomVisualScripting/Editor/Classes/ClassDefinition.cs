@@ -11,6 +11,11 @@ namespace CustomVisualScripting.Editor.Classes
         public string Type         = "int";   // "int" | "float" | "bool" | "string"
         public string DefaultValue = "";      // пустая строка → без инициализатора
 
+        /// <summary>public (true) или private (false).</summary>
+        public bool IsPublic = true;
+        /// <summary>static (true) или instance/нестатическое (false).</summary>
+        public bool IsStatic = false;
+
         public FieldDefinition()
         {
             Id = Guid.NewGuid().ToString();

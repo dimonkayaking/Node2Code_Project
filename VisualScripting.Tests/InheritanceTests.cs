@@ -74,6 +74,83 @@ public class InheritanceTests
     }
 
     [Fact]
+    public void Parser_EmptyMainBody_NoErrors()
+    {
+        // Регрессия: пустое тело Main внутри class-обёртки не должно давать
+        // "} expected" / "Type or namespace expected" (баг StripClassWrapper:
+        // при пустом теле возвращался весь class-код, который оборачивался в метод).
+        var code = """
+            class Program
+            {
+                public static void Main()
+                {
+                    // Тело пусто
+                }
+            }
+            """;
+
+        var result = _parser.Parse(code);
+
+        Assert.False(result.HasErrors, string.Join("\n", result.Errors));
+        Assert.Single(result.DiscoveredClasses);
+        Assert.Equal("Program", result.DiscoveredClasses[0].Name);
+    }
+
+    [Fact]
+    public void Parser_FieldModifiers_DetectedCorrectly()
+    {
+        // public static / private (нестатическое) / public (нестатическое) — все комбинации.
+        var code = """
+            class Program : MonoBehaviour
+            {
+                public static int score;
+                private float speed;
+                public bool active;
+                void Start() { int x = 1; }
+            }
+            """;
+
+        var result = _parser.Parse(code);
+        Assert.False(result.HasErrors, string.Join("\n", result.Errors));
+
+        var prog  = result.DiscoveredClasses.First(c => c.Name == "Program");
+        var score = prog.Fields.First(f => f.Name == "score");
+        Assert.True(score.IsPublic);
+        Assert.True(score.IsStatic);
+
+        var speed = prog.Fields.First(f => f.Name == "speed");
+        Assert.False(speed.IsPublic);   // private
+        Assert.False(speed.IsStatic);   // нестатическое
+
+        var active = prog.Fields.First(f => f.Name == "active");
+        Assert.True(active.IsPublic);
+        Assert.False(active.IsStatic);
+    }
+
+    [Fact]
+    public void Parser_StartUpdate_NoMain_NoErrors()
+    {
+        // Новая модель: вместо Main создаются нестатические Start/Update на MonoBehaviour.
+        // Парсер не должен требовать Main и не должен падать.
+        var code = """
+            class Program : MonoBehaviour
+            {
+                void Start() { int x = 1; }
+                void Update() { int y = 2; }
+            }
+            """;
+
+        var result = _parser.Parse(code);
+        Assert.False(result.HasErrors, string.Join("\n", result.Errors));
+
+        var prog = result.DiscoveredClasses.Single();
+        Assert.Equal("Program", prog.Name);
+        Assert.Equal("MonoBehaviour", prog.BaseClassName);
+        Assert.Contains("Start",  prog.MethodNames);
+        Assert.Contains("Update", prog.MethodNames);
+    }
+
+    [Fact]
     public void Parser_NoInheritance_BaseClassNameIsEmpty()
     {
         var code = """

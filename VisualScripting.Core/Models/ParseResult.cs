@@ -8,6 +8,10 @@ namespace VisualScripting.Core.Parsers
         public string Name         = "";
         public string Type         = "int";
         public string DefaultValue = "";
+        /// <summary>public (true) или private (false). По умолчанию true.</summary>
+        public bool   IsPublic     = true;
+        /// <summary>static (true) или instance (false).</summary>
+        public bool   IsStatic     = false;
     }
 
     public class ParsedClassInfo

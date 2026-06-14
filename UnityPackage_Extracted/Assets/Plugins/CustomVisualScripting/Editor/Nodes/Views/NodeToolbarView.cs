@@ -78,6 +78,54 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         private GraphContext GetCurrentContext() =>
             (_graphView as FilteredCreateMenuBaseGraphView)?.GraphContext ?? GraphContext.MethodBody;
 
+        // ─── Контекст метода и C#-корректная видимость ───────────────────────
+
+        /// <summary>Метод, тело которого сейчас редактируется (или null — файл/класс).</summary>
+        private static MethodDefinition GetContextMethod() =>
+            VisualScriptingWindow.ActiveWindow?.GetActiveMethodContext();
+
+        /// <summary>
+        /// Виден ли член класса <paramref name="ownerClassId"/> (с модификаторами
+        /// <paramref name="isStatic"/>/<paramref name="isPublic"/>) из метода-контекста
+        /// класса <paramref name="ctxClassId"/> (статический — <paramref name="ctxIsStatic"/>)?
+        ///
+        /// Свой класс: instance-метод видит всё, static-метод — только static.
+        /// Другой класс: только static public и НЕ потомок текущего класса
+        /// (обращение к члену экземпляра другого класса невозможно без его экземпляра).
+        /// </summary>
+        private static bool IsMemberVisible(string ownerClassId, bool isStatic, bool isPublic,
+                                            string ctxClassId, bool ctxIsStatic)
+        {
+            if (string.Equals(ownerClassId, ctxClassId, StringComparison.Ordinal))
+                return !ctxIsStatic || isStatic;
+
+            if (!isPublic || !isStatic) return false;
+            return !IsDescendantOf(ownerClassId, ctxClassId);
+        }
+
+        /// <summary><paramref name="candidateId"/> — потомок (прямой или транзитивный) <paramref name="ancestorId"/>?</summary>
+        private static bool IsDescendantOf(string candidateId, string ancestorId)
+        {
+            if (string.IsNullOrEmpty(ancestorId) || string.IsNullOrEmpty(candidateId)) return false;
+            var visited = new HashSet<string>(StringComparer.Ordinal);
+            var cur = ClassRegistry.GetById(candidateId);
+            while (cur != null && !string.IsNullOrEmpty(cur.BaseClassId))
+            {
+                if (!visited.Add(cur.BaseClassId)) break;
+                if (string.Equals(cur.BaseClassId, ancestorId, StringComparison.Ordinal)) return true;
+                cur = ClassRegistry.GetById(cur.BaseClassId);
+            }
+            return false;
+        }
+
+        /// <summary>Краткое описание контекста для шапки панели ("Program.Start · instance").</summary>
+        private static string DescribeContext(MethodDefinition ctx)
+        {
+            if (ctx == null) return "";
+            var clsName = ClassRegistry.GetById(ctx.ClassId)?.Name ?? "?";
+            return $"{clsName}.{ctx.Name} · {(ctx.IsStatic ? "static" : "instance")}";
+        }
+
         // ─── Построение UI ────────────────────────────────────────────────────
 
         private void BuildUI()
@@ -447,26 +495,25 @@ namespace CustomVisualScripting.Editor.Nodes.Views
                 createBtn.style.backgroundColor = new Color(0.22f, 0.22f, 0.22f));
             _contentContainer.Add(createBtn);
 
+            // Контекст метода → C#-корректная фильтрация. Если контекста нет — показываем всё.
+            var ctx = GetContextMethod();
+            AddContextHint(ctx);
+
+            bool Visible(ClassDefinition cls, MethodDefinition m) =>
+                ctx == null ||
+                IsMemberVisible(cls.Id, m.IsStatic, m.IsPublic, ctx.ClassId, ctx.IsStatic);
+
             var methods = MethodRegistry.Methods;
-            if (methods.Count == 0)
-            {
-                var empty = new Label("  (нет методов)");
-                empty.style.color    = new Color(0.5f, 0.5f, 0.5f);
-                empty.style.fontSize = 11;
-                _contentContainer.Add(empty);
-                return;
-            }
-
-            // Группируем методы по классу
             var classes = ClassRegistry.Classes;
+            bool anyShown = false;
 
-            // Классы, у которых есть хотя бы один метод
             foreach (var cls in classes)
             {
                 var classMethods = methods
-                    .Where(m => string.Equals(m.ClassId, cls.Id, StringComparison.Ordinal))
+                    .Where(m => string.Equals(m.ClassId, cls.Id, StringComparison.Ordinal) && Visible(cls, m))
                     .ToList();
                 if (classMethods.Count == 0) continue;
+                anyShown = true;
 
                 _contentContainer.Add(BuildClassGroupHeader(cls.Id, cls.Name, classMethods.Count));
 
@@ -477,22 +524,47 @@ namespace CustomVisualScripting.Editor.Nodes.Views
                 }
             }
 
-            // Методы без класса (legacy / ручное создание без ClassId)
-            var orphans = methods
-                .Where(m => string.IsNullOrEmpty(m.ClassId) ||
-                            classes.All(c => !string.Equals(c.Id, m.ClassId, StringComparison.Ordinal)))
-                .ToList();
-
-            if (orphans.Count > 0)
+            // Методы без класса (legacy) — только когда контекст не задан.
+            if (ctx == null)
             {
-                const string orphanKey = "__orphan__";
-                _contentContainer.Add(BuildClassGroupHeader(orphanKey, "Без класса", orphans.Count));
-                if (_expandedClassIds.Contains(orphanKey))
+                var orphans = methods
+                    .Where(m => string.IsNullOrEmpty(m.ClassId) ||
+                                classes.All(c => !string.Equals(c.Id, m.ClassId, StringComparison.Ordinal)))
+                    .ToList();
+
+                if (orphans.Count > 0)
                 {
-                    foreach (var def in orphans)
-                        _contentContainer.Add(BuildMethodRow(def));
+                    anyShown = true;
+                    const string orphanKey = "__orphan__";
+                    _contentContainer.Add(BuildClassGroupHeader(orphanKey, "Без класса", orphans.Count));
+                    if (_expandedClassIds.Contains(orphanKey))
+                        foreach (var def in orphans)
+                            _contentContainer.Add(BuildMethodRow(def));
                 }
             }
+
+            if (!anyShown)
+            {
+                var empty = new Label("  (нет доступных методов)");
+                empty.style.color    = new Color(0.5f, 0.5f, 0.5f);
+                empty.style.fontSize = 11;
+                _contentContainer.Add(empty);
+            }
+        }
+
+        /// <summary>Добавляет в шапку панели подпись с текущим контекстом метода.</summary>
+        private void AddContextHint(MethodDefinition ctx)
+        {
+            if (ctx == null) return;
+            var hint = new Label(DescribeContext(ctx));
+            hint.style.fontSize    = 9;
+            hint.style.color       = new Color(0.55f, 0.55f, 0.55f);
+            hint.style.marginBottom = 4;
+            hint.style.unityTextAlign = TextAnchor.MiddleCenter;
+            hint.style.whiteSpace  = WhiteSpace.NoWrap;
+            hint.style.textOverflow = TextOverflow.Ellipsis;
+            hint.style.overflow    = Overflow.Hidden;
+            _contentContainer.Add(hint);
         }
 
         // ─── Заголовок группы класса ──────────────────────────────────────────
@@ -716,9 +788,31 @@ namespace CustomVisualScripting.Editor.Nodes.Views
                 return;
             }
 
+            // Контекст метода → C#-корректная фильтрация. Если контекста нет — показываем всё.
+            var ctx = GetContextMethod();
+            AddContextHint(ctx);
+
+            // Размещать на графе пока можно только поля СВОЕГО класса (ноды полей других
+            // классов требуют квалификатора Owner.field в генераторе и парсере — отдельный шаг).
+            // Свой класс: static-метод видит только static-поля, instance-метод — все.
+            bool Visible(ClassDefinition cls, FieldDefinition f)
+            {
+                if (ctx == null) return true;
+                if (!string.Equals(cls.Id, ctx.ClassId, StringComparison.Ordinal)) return false;
+                return !ctx.IsStatic || f.IsStatic;
+            }
+
+            bool anyShown = false;
             foreach (var cls in classes)
             {
-                var fields = cls.Fields ?? new System.Collections.Generic.List<FieldDefinition>();
+                var fields = (cls.Fields ?? new System.Collections.Generic.List<FieldDefinition>())
+                    .Where(f => Visible(cls, f))
+                    .ToList();
+
+                // При активном контексте скрываем классы без доступных полей.
+                if (ctx != null && fields.Count == 0) continue;
+                anyShown = true;
+
                 _contentContainer.Add(BuildFieldsClassGroupHeader(cls.Id, cls.Name, fields.Count));
 
                 if (_expandedClassIdsForFields.Contains(cls.Id))
@@ -726,6 +820,14 @@ namespace CustomVisualScripting.Editor.Nodes.Views
                     foreach (var field in fields)
                         _contentContainer.Add(BuildFieldRow(cls, field));
                 }
+            }
+
+            if (!anyShown)
+            {
+                var empty = new Label("  (нет доступных полей)");
+                empty.style.color    = new Color(0.5f, 0.5f, 0.5f);
+                empty.style.fontSize = 11;
+                _contentContainer.Add(empty);
             }
         }
 
@@ -812,10 +914,10 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             row.style.marginBottom    = 1;
             row.style.paddingLeft     = 10; // визуальная вложенность
 
-            // Метка «тип  имя»
-            var infoBtn = new Button();
+            // Кнопка «создать ноду поля на графе» (чтение/запись поля в теле метода)
+            var infoBtn = new Button(() => CreateFieldRefNodeOnGraph(cls, field));
             infoBtn.text                  = $"{field.Type}  {field.Name}";
-            infoBtn.tooltip               = $"{field.Type} {field.Name}" + (string.IsNullOrEmpty(field.DefaultValue) ? "" : $" = {field.DefaultValue}");
+            infoBtn.tooltip               = $"Добавить ноду поля «{(field.IsPublic ? "public" : "private")}{(field.IsStatic ? " static" : "")} {field.Type} {field.Name}» на граф";
             infoBtn.style.flexGrow        = 1;
             infoBtn.style.fontSize        = 12;
             infoBtn.style.paddingTop      = 5;
@@ -857,14 +959,7 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         }
 
         // ─── Обработчики полей ────────────────────────────────────────────────
-
-        private void OnFieldsChanged()
-        {
-            if (_showingFieldsCategory)
-                ShowFieldsCategory();
-            else
-                ShowCategories();
-        }
+        // (обновление панели полей идёт через OnClassesChanged → ShowFieldsCategory)
 
         private void OnAddFieldToClassClicked(string classId)
         {
@@ -881,6 +976,44 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         private void OnEditFieldInPanelClicked(ClassDefinition cls, FieldDefinition field)
         {
             FieldEditPopup.ShowEdit(field, _ => ClassRegistry.Update(cls));
+        }
+
+        /// <summary>
+        /// Создаёт <see cref="FieldRefNode"/> на текущем графе тела метода.
+        /// Нода поддерживает и чтение (output), и запись (value-вход + exec).
+        /// </summary>
+        private void CreateFieldRefNodeOnGraph(ClassDefinition cls, FieldDefinition field)
+        {
+            if (_graphView == null || _graphView.graph == null)
+            {
+                UnityEngine.Debug.LogError("[NodeToolbarView] Graph is not initialized.");
+                return;
+            }
+
+            Rect    graphRect    = _graphView.layout;
+            Vector2 screenCenter = new Vector2(graphRect.width / 2f, graphRect.height / 2f);
+#pragma warning disable 0618
+            Vector2 pan   = (Vector2)_graphView.viewTransform.position;
+            float   scale = _graphView.scale;
+#pragma warning restore 0618
+            Vector2 graphCenter = (screenCenter - pan) / scale;
+            Vector2 finalPos    = FindFreePosition(graphCenter, 200, 90, 25f);
+
+            var node = new FieldRefNode
+            {
+                FieldId   = field.Id,
+                FieldName = field.Name,
+                FieldType = field.Type
+            };
+            if (string.IsNullOrEmpty(node.GUID)) node.GUID = Guid.NewGuid().ToString();
+            node.NodeId   = node.GUID;
+            node.position = new Rect(finalPos.x, finalPos.y, 200, 90);
+
+            try { _graphView.AddNode(node); }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogError($"[NodeToolbarView] Failed to add field node: {e.Message}");
+            }
         }
 
         private void OnDeleteFieldClicked(string classId, string fieldId)
@@ -921,11 +1054,20 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             Vector2 finalPos    = FindFreePosition(graphCenter, 220, 100, 25f);
 
             var classDef = ClassRegistry.GetById(def.ClassId);
+
+            // Квалифицируем именем класса только вызов метода ДРУГОГО класса (Other.Method()).
+            // Для метода своего класса префикс не нужен — иначе instance-вызов «Program.Foo()»
+            // не скомпилируется. Без префикса генерируется «Foo()» (корректно и для static, и для instance).
+            var ctxMethod = GetContextMethod();
+            bool sameClass = ctxMethod != null &&
+                string.Equals(def.ClassId, ctxMethod.ClassId, StringComparison.Ordinal);
+            string className = sameClass ? "" : (classDef?.Name ?? "");
+
             var node = new MethodCallNode
             {
                 MethodId         = def.Id,
                 MethodName       = def.Name,
-                ClassName        = classDef?.Name ?? "",
+                ClassName        = className,
                 ReturnType       = def.ReturnType,
                 ActiveParamCount = Mathf.Min(def.Parameters.Count, MethodCallNode.MaxParams),
                 ParamNames       = new string[MethodCallNode.MaxParams],

@@ -11,6 +11,10 @@ namespace VisualScripting.Core.Models
         public string Id         { get; set; } = "";
         public string Name       { get; set; } = "";
         public string ReturnType { get; set; } = "void";
+        /// <summary>public (true) или private (false).</summary>
+        public bool   IsPublic   { get; set; } = true;
+        /// <summary>static (true) или instance (false).</summary>
+        public bool   IsStatic   { get; set; } = false;
         public List<string> ParamNames { get; set; } = new List<string>();
         public List<string> ParamTypes { get; set; } = new List<string>();
         /// <summary>Граф тела метода (нужен только генератору).</summary>

@@ -57,13 +57,15 @@ namespace CustomVisualScripting.Integration
                 sb.AppendLine($"class {cls.Name}{baseStr}");
                 sb.AppendLine("{");
 
-                // Статические поля
+                // Поля (модификаторы: public/private + static/instance)
                 foreach (var field in cls.Fields ?? Enumerable.Empty<ClassFieldData>())
                 {
+                    var modifier  = field.IsPublic ? "public" : "private";
+                    var staticStr = field.IsStatic ? " static" : "";
                     if (!string.IsNullOrWhiteSpace(field.DefaultValue))
-                        sb.AppendLine($"    public static {field.Type} {field.Name} = {field.DefaultValue};");
+                        sb.AppendLine($"    {modifier}{staticStr} {field.Type} {field.Name} = {field.DefaultValue};");
                     else
-                        sb.AppendLine($"    public static {field.Type} {field.Name};");
+                        sb.AppendLine($"    {modifier}{staticStr} {field.Type} {field.Name};");
                 }
                 if (cls.Fields?.Count > 0) sb.AppendLine();
 
@@ -203,7 +205,7 @@ namespace CustomVisualScripting.Integration
         // ─── Вспомогательные ─────────────────────────────────────────────────
 
         /// <summary>
-        /// Строит объявление статического метода уровня класса.
+        /// Строит объявление метода уровня класса с модификаторами public/private + static/instance.
         /// Сигнатура без отступа; тело — с 1 уровнем отступа (как возвращает GenerateMethodBody).
         /// </summary>
         private static string BuildStaticMethod(MethodInfo def,
@@ -222,7 +224,9 @@ namespace CustomVisualScripting.Integration
                     }));
 
             var returnType = string.IsNullOrEmpty(def.ReturnType) ? "void" : def.ReturnType;
-            var signature  = $"public static {returnType} {def.Name}({paramList})";
+            var modifier   = def.IsPublic ? "public" : "private";
+            var staticStr  = def.IsStatic ? " static" : "";
+            var signature  = $"{modifier}{staticStr} {returnType} {def.Name}({paramList})";
 
             var bodyCode = _generator.GenerateMethodBody(def.BodyGraph, def, allMethods);
 

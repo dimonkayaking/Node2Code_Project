@@ -230,11 +230,13 @@ namespace VisualScripting.Core.Parsers
                 foreach (var m in classDecl.Members.OfType<MethodDeclarationSyntax>())
                     info.MethodNames.Add(m.Identifier.Text);
 
-                // Поля (static int value = 0 и т.п.)
+                // Поля (public/private + static/instance)
                 foreach (var fieldDecl in classDecl.Members.OfType<FieldDeclarationSyntax>())
                 {
                     var rawType    = fieldDecl.Declaration.Type.ToString().Trim();
                     var mappedType = MapValueType(rawType) ?? "int";
+                    var isPublic   = fieldDecl.Modifiers.Any(m => m.IsKind(SyntaxKind.PublicKeyword));
+                    var isStatic   = fieldDecl.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
                     foreach (var variable in fieldDecl.Declaration.Variables)
                     {
                         var defaultVal = variable.Initializer?.Value?.ToString().Trim() ?? "";
@@ -242,7 +244,9 @@ namespace VisualScripting.Core.Parsers
                         {
                             Name         = variable.Identifier.Text,
                             Type         = mappedType,
-                            DefaultValue = defaultVal
+                            DefaultValue = defaultVal,
+                            IsPublic     = isPublic,
+                            IsStatic     = isStatic
                         });
                     }
                 }
@@ -256,14 +260,13 @@ namespace VisualScripting.Core.Parsers
                 .OfType<MethodDeclarationSyntax>()
                 .ToList();
 
-            var mainMethod = allMethods.FirstOrDefault(m => m.Identifier.Text == "Main")
-                             ?? allMethods.FirstOrDefault();
+            // Только метод с именем Main становится «основным графом» (корневой граф).
+            // Нет fallback на первый метод: в классовой модели остальные методы
+            // (Start, Update, пользовательские) — обычные методы класса.
+            var mainMethod = allMethods.FirstOrDefault(m => m.Identifier.Text == "Main");
 
-            if (mainMethod == null)
-                return code;
-
-            // Предварительно регистрируем все не-Main методы как известные,
-            // чтобы вызовы внутри Main создавали MethodCallNode.
+            // Все методы, КРОМЕ Main, — методы класса: регистрируем их сигнатуры как известные
+            // (чтобы вызовы распознавались как MethodCall) и складываем тела в _pendingClassMethods.
             var extraMethods = new List<MethodInfo>(_knownMethods);
             foreach (var m in allMethods)
             {
@@ -275,9 +278,13 @@ namespace VisualScripting.Core.Parsers
             if (extraMethods.Count > _knownMethods.Count)
                 _knownMethods = extraMethods;
 
-            var methodBody = mainMethod.Body;
+            // Тело Main (если есть) становится корневым графом. Нет Main или пустое тело →
+            // корневой граф пуст. Возвращать исходный код НЕЛЬЗЯ: top-level class не может
+            // находиться внутри __VsParseMethod (Roslyn выдаст «} expected»). Классы и их
+            // методы уже собраны выше.
+            var methodBody = mainMethod?.Body;
             if (methodBody == null || methodBody.Statements.Count == 0)
-                return code;
+                return "";
 
             var start = methodBody.Statements.First().SpanStart;
             var end   = methodBody.Statements.Last().Span.End;
@@ -333,6 +340,8 @@ namespace VisualScripting.Core.Parsers
                 Id         = "__classfn__" + name,
                 Name       = name,
                 ReturnType = returnType,
+                IsPublic   = mdecl.Modifiers.Any(m => m.IsKind(SyntaxKind.PublicKeyword)),
+                IsStatic   = mdecl.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword)),
                 ParamNames = paramNames,
                 ParamTypes = paramTypes,
                 BodyGraph  = null
@@ -1052,24 +1061,32 @@ namespace VisualScripting.Core.Parsers
                     if (unsupported || rootId == null)
                         return null;
 
-                    // ── Присваивание полю класса (FieldRef-нода) ──────────────────
+                    // ── Присваивание полю класса (FieldSet-нода) ──────────────────
                     // Каждое присваивание создаёт НОВЫЙ FieldSet-узел, а не переиспользует
-                    // FieldRef. Это предотвращает self-loop в exec-цепочке при повторных
-                    // присваиваниях одного поля и множественные value-рёбра к одному узлу.
-                    // _symbolToNodeId[name] не меняем: читает поле по-прежнему FieldRef.
+                    // FieldRef. _symbolToNodeId[name] не меняем: читает поле по-прежнему FieldRef.
+                    //
+                    // Поле распознаём по стабильному префиксу id ("_fieldref_"), а НЕ по поиску
+                    // ноды в текущем графе: внутри подпространства (тело if/for/while) FieldRef-нода
+                    // лежит в родительском графе и в _graph не находится. Раньше из-за этого
+                    // присваивание полю внутри if/for/while превращалось в объявление локальной
+                    // переменной («int score = 0;»), и повторный парсинг падал с «повторным объявлением».
                     if (_symbolToNodeId.TryGetValue(name, out var existingId))
                     {
                         var existingNode = _graph.Nodes.FirstOrDefault(n => n.Id == existingId);
-                        if (existingNode?.Type == NodeType.FieldRef)
+                        bool isField = existingId.StartsWith("_fieldref_", StringComparison.Ordinal)
+                                       || existingNode?.Type == NodeType.FieldRef;
+                        if (isField)
                         {
+                            var fieldType = existingNode?.ValueType
+                                ?? (_variableTypes.TryGetValue(name, out var ft) ? ft : "int");
                             var fieldSetId = NewId();
                             _graph.Nodes.Add(new NodeData
                             {
                                 Id           = fieldSetId,
                                 Type         = NodeType.FieldSet,
-                                VariableName = existingNode.VariableName,
-                                ValueType    = existingNode.ValueType,
-                                Value        = existingNode.Value
+                                VariableName = existingNode?.VariableName ?? name,
+                                ValueType    = fieldType,
+                                Value        = existingNode?.Value ?? ""
                             });
                             AddEdge(rootId, GetDataOutPortForNodeId(rootId), fieldSetId, "value");
                             if (prevNode != null)
@@ -1283,6 +1300,35 @@ namespace VisualScripting.Core.Parsers
             return id;
         }
 
+        /// <summary>
+        /// Является ли <paramref name="name"/> полем класса. Определяем по стабильному
+        /// префиксу id ("_fieldref_") — надёжно и внутри подпространств, где сама FieldRef-нода
+        /// лежит в родительском графе.
+        /// </summary>
+        private bool IsFieldSymbol(string name) =>
+            _symbolToNodeId.TryGetValue(name, out var id)
+            && id.StartsWith("_fieldref_", StringComparison.Ordinal);
+
+        /// <summary>Создаёт FieldSet-узел, пишущий в поле значение с выхода <paramref name="valueNodeId"/>.</summary>
+        private FlowHost EmitFieldSet(string fieldName, string valueNodeId, string prevNode, string prevPort)
+        {
+            var vType = _variableTypes.TryGetValue(fieldName, out var t) ? t : "int";
+            var fieldSetId = NewId();
+            _graph.Nodes.Add(new NodeData
+            {
+                Id           = fieldSetId,
+                Type         = NodeType.FieldSet,
+                VariableName = fieldName,
+                ValueType    = vType,
+                Value        = ""
+            });
+            AddEdge(valueNodeId, GetDataOutPortForNodeId(valueNodeId), fieldSetId, "value");
+            if (prevNode != null)
+                AddEdge(prevNode, prevPort, fieldSetId, PortIds.ExecIn);
+            // _symbolToNodeId[fieldName] не меняем — чтение поля остаётся через FieldRef.
+            return new FlowHost { NodeId = fieldSetId, ExecOutPort = PortIds.ExecOut };
+        }
+
         private FlowHost VisitCompoundAssignment(AssignmentExpressionSyntax assign, string prevNode, string prevPort)
         {
             var name = ((IdentifierNameSyntax)assign.Left).Identifier.Text;
@@ -1334,9 +1380,13 @@ namespace VisualScripting.Core.Parsers
             AddEdge(leftId, GetDataOutPortForNodeId(leftId), opId, "inputA");
             AddEdge(rightId, GetDataOutPortForNodeId(rightId), opId, "inputB");
 
+            // Поле класса (score += x) → FieldSet, а не объявление локальной переменной.
+            if (IsFieldSymbol(name))
+                return EmitFieldSet(name, opId, prevNode, prevPort);
+
             var vType = _variableTypes.TryGetValue(name, out var t) ? t : "int";
             var litId = CreateDefaultLiteralNode(vType, name);
-            
+
             AddEdge(opId, "output", litId, "inputValue");
             _symbolToNodeId[name] = litId;
 
@@ -1383,9 +1433,13 @@ namespace VisualScripting.Core.Parsers
             AddEdge(varNodeId, GetDataOutPortForNodeId(varNodeId), opId, "inputA");
             AddEdge(oneId, "output", opId, "inputB");
 
+            // Поле класса (score++ / score--) → FieldSet, а не объявление локальной переменной.
+            if (IsFieldSymbol(name))
+                return EmitFieldSet(name, opId, prevNode, prevPort);
+
             var vType = _variableTypes.TryGetValue(name, out var t) ? t : "int";
             var litId = CreateDefaultLiteralNode(vType, name);
-            
+
             AddEdge(opId, "output", litId, "inputValue");
             _symbolToNodeId[name] = litId;
 

@@ -12,11 +12,15 @@ namespace VisualScripting.Core.Models
         public List<ClassFieldData> Fields = new();
     }
 
-    /// <summary>Описание статического поля класса.</summary>
+    /// <summary>Описание поля класса.</summary>
     public class ClassFieldData
     {
         public string Name;
         public string Type;
         public string DefaultValue;
+        /// <summary>public (true) или private (false).</summary>
+        public bool IsPublic = true;
+        /// <summary>static (true) или instance (false).</summary>
+        public bool IsStatic = false;
     }
 }

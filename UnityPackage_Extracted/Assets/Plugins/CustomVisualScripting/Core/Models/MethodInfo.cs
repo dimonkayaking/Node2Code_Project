@@ -11,6 +11,10 @@ namespace VisualScripting.Core.Models
         public string Id         { get; set; } = "";
         public string Name       { get; set; } = "";
         public string ReturnType { get; set; } = "void";
+        /// <summary>public (true) или private (false).</summary>
+        public bool   IsPublic   { get; set; } = true;
+        /// <summary>static (true) или instance (false).</summary>
+        public bool   IsStatic   { get; set; } = false;
         /// <summary>Id класса-владельца (Editor ClassDefinition.Id). Пустая строка — метод не привязан к классу.</summary>
         public string ClassId    { get; set; } = "";
         public string ClassName  { get; set; } = "";

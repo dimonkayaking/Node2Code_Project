@@ -18,6 +18,8 @@ namespace CustomVisualScripting.Editor.Methods
 
         private string _name = "MyMethod";
         private int    _returnTypeIdx;
+        private bool   _isPublic = true;
+        private bool   _isStatic = false;
         private List<ParameterDefinition> _params = new();
 
         private Action<MethodDefinition> _onConfirm;
@@ -40,9 +42,11 @@ namespace CustomVisualScripting.Editor.Methods
             w._editing       = null;
             w._name          = defaultName;
             w._returnTypeIdx = 0;
+            w._isPublic      = true;
+            w._isStatic      = false;
             w.RefreshClassList(selectedClassId: preselectedClassId);
             w.ShowUtility();
-            w.minSize = new Vector2(380, 320);
+            w.minSize = new Vector2(380, 360);
         }
 
         public static void ShowEdit(MethodDefinition existing, Action<MethodDefinition> onConfirm)
@@ -53,11 +57,13 @@ namespace CustomVisualScripting.Editor.Methods
             w._editing       = existing;
             w._name          = existing.Name;
             w._returnTypeIdx = Mathf.Max(0, Array.IndexOf(ReturnTypes, existing.ReturnType));
+            w._isPublic      = existing.IsPublic;
+            w._isStatic      = existing.IsStatic;
             w._params        = new List<ParameterDefinition>(existing.Parameters
                                    .ConvertAll(p => new ParameterDefinition { Name = p.Name, Type = p.Type }));
             w.RefreshClassList(selectedClassId: existing.ClassId);
             w.ShowUtility();
-            w.minSize = new Vector2(380, 320);
+            w.minSize = new Vector2(380, 360);
         }
 
         private void RefreshClassList(string selectedClassId)
@@ -105,6 +111,16 @@ namespace CustomVisualScripting.Editor.Methods
             // ── Тип возврата ──────────────────────────────────────────────────
             EditorGUILayout.LabelField("Возвращаемый тип", EditorStyles.boldLabel);
             _returnTypeIdx = EditorGUILayout.Popup(_returnTypeIdx, ReturnTypes);
+
+            EditorGUILayout.Space(6);
+
+            // ── Модификаторы: public/private + static/instance ─────────────────
+            EditorGUILayout.LabelField("Модификаторы", EditorStyles.boldLabel);
+            EditorGUILayout.BeginHorizontal();
+            _isPublic = DrawToggle(_isPublic, "public", "private", new Color(0.2f, 0.55f, 0.85f));
+            GUILayout.Space(6);
+            _isStatic = DrawToggle(_isStatic, "static", "—",       new Color(0.55f, 0.4f, 0.75f));
+            EditorGUILayout.EndHorizontal();
 
             EditorGUILayout.Space(8);
 
@@ -166,6 +182,17 @@ namespace CustomVisualScripting.Editor.Methods
             EditorGUILayout.EndHorizontal();
         }
 
+        /// <summary>Кнопка-переключатель: <paramref name="onLabel"/> при true, <paramref name="offLabel"/> при false.</summary>
+        private static bool DrawToggle(bool value, string onLabel, string offLabel, Color onColor)
+        {
+            Color prev = GUI.backgroundColor;
+            GUI.backgroundColor = value ? onColor : new Color(0.4f, 0.4f, 0.4f);
+            if (GUILayout.Button(value ? onLabel : offLabel, GUILayout.Height(22)))
+                value = !value;
+            GUI.backgroundColor = prev;
+            return value;
+        }
+
         private void TryConfirm()
         {
             if (_availableClasses.Count == 0)
@@ -190,6 +217,8 @@ namespace CustomVisualScripting.Editor.Methods
                 // Мутируем существующий объект — сохраняем ParamGraph, BodyGraph и живую ссылку рантайма
                 _editing.Name       = _name.Trim();
                 _editing.ReturnType = ReturnTypes[_returnTypeIdx];
+                _editing.IsPublic   = _isPublic;
+                _editing.IsStatic   = _isStatic;
                 _editing.Parameters = new List<ParameterDefinition>(_params);
                 _editing.ClassId    = selectedClassId;
                 def = _editing;
@@ -201,6 +230,8 @@ namespace CustomVisualScripting.Editor.Methods
                     Id         = Guid.NewGuid().ToString(),
                     Name       = _name.Trim(),
                     ReturnType = ReturnTypes[_returnTypeIdx],
+                    IsPublic   = _isPublic,
+                    IsStatic   = _isStatic,
                     Parameters = new List<ParameterDefinition>(_params),
                     ClassId    = selectedClassId,
                     BodyGraph  = new VisualScripting.Core.Models.GraphData()

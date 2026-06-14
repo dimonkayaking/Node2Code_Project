@@ -197,7 +197,7 @@ namespace CustomVisualScripting.Editor.Windows
         /// </summary>
         // Шаблон кода по умолчанию — отображается при первом открытии плагина
         internal const string DefaultCodeTemplate =
-            "class Program\n{\n    public static void Main()\n    {\n        // Ваш код\n    }\n}";
+            "class Program : MonoBehaviour\n{\n    void Start()\n    {\n        // Ваш код\n    }\n\n    void Update()\n    {\n        // Ваш код\n    }\n}";
 
         internal void EnsureProgramClassExists()
         {
@@ -206,18 +206,12 @@ namespace CustomVisualScripting.Editor.Windows
             var program = new ClassDefinition { Name = "Program" };
             ClassRegistry.Add(program);
 
-            // Стабильный ID — совпадает с тем, что создаёт парсер при разборе class-кода.
-            // Это гарантирует что при парсинге не создаётся второй метод Main.
-            var mainMethod = new Methods.MethodDefinition
-            {
-                Id         = "__classfn__Main",
-                Name       = "Main",
-                ReturnType = "void",
-                ClassId    = program.Id,
-                BodyGraph  = new GraphData(),
-                ParamGraph = new GraphData()
-            };
-            Methods.MethodRegistry.Add(mainMethod);
+            // Стабильные ID совпадают с тем, что создаёт парсер при разборе class-кода
+            // (BuildMethodInfoSignature → "__classfn__" + name), поэтому при повторном
+            // парсинге методы обновляются, а не дублируются.
+            // Start/Update — нестатические void-методы MonoBehaviour (IsStatic=false, IsPublic=false).
+            CreateMonoMessageMethod(program.Id, "Start");
+            CreateMonoMessageMethod(program.Id, "Update");
 
             RebuildMainGraphWithClassNodes();
 
@@ -227,6 +221,26 @@ namespace CustomVisualScripting.Editor.Windows
                 var generated = GenerateCurrentCode();
                 _codeEditor.Code = string.IsNullOrWhiteSpace(generated) ? DefaultCodeTemplate : generated;
             }
+        }
+
+        /// <summary>
+        /// Создаёт нестатический void-метод MonoBehaviour (Start/Update) со стабильным
+        /// ID <c>"__classfn__" + name</c> и регистрирует его в <see cref="Methods.MethodRegistry"/>.
+        /// </summary>
+        private static void CreateMonoMessageMethod(string classId, string name)
+        {
+            var method = new Methods.MethodDefinition
+            {
+                Id         = "__classfn__" + name,
+                Name       = name,
+                ReturnType = "void",
+                IsPublic   = false, // void Start()/Update() — без модификатора (private по умолчанию C#)
+                IsStatic   = false, // нестатические методы экземпляра MonoBehaviour
+                ClassId    = classId,
+                BodyGraph  = new GraphData(),
+                ParamGraph = new GraphData()
+            };
+            Methods.MethodRegistry.Add(method);
         }
     }
 }

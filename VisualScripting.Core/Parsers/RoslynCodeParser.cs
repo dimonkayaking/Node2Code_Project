@@ -254,14 +254,18 @@ namespace VisualScripting.Core.Parsers
 
                 foreach (var fieldDecl in classDecl.Members.OfType<FieldDeclarationSyntax>())
                 {
-                    var rawType = fieldDecl.Declaration.Type.ToString().Trim();
+                    var rawType  = fieldDecl.Declaration.Type.ToString().Trim();
+                    var isPublic = fieldDecl.Modifiers.Any(m => m.IsKind(SyntaxKind.PublicKeyword));
+                    var isStatic = fieldDecl.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword));
                     foreach (var variable in fieldDecl.Declaration.Variables)
                     {
                         info.Fields.Add(new ParsedFieldInfo
                         {
                             Name         = variable.Identifier.Text,
                             Type         = rawType,
-                            DefaultValue = variable.Initializer?.Value?.ToString().Trim() ?? ""
+                            DefaultValue = variable.Initializer?.Value?.ToString().Trim() ?? "",
+                            IsPublic     = isPublic,
+                            IsStatic     = isStatic
                         });
                     }
                 }
@@ -271,18 +275,19 @@ namespace VisualScripting.Core.Parsers
                     _mainClassName = info.Name;
             }
 
-            // Сначала пробуем метод с именем Main, затем любой первый метод
+            // Только метод Main становится корневым графом (без fallback на первый метод):
+            // в классовой модели остальные методы (Start, Update, пользовательские) — обычные
+            // методы класса, а не «основной граф».
             var methodBody = rawRoot.DescendantNodes()
                                  .OfType<MethodDeclarationSyntax>()
                                  .FirstOrDefault(m => m.Identifier.Text == "Main")
-                                 ?.Body
-                             ?? rawRoot.DescendantNodes()
-                                 .OfType<MethodDeclarationSyntax>()
-                                 .FirstOrDefault()
                                  ?.Body;
 
+            // Пустое тело Main (только комментарий / нет инструкций) → основной граф пуст.
+            // Возвращаем "", а НЕ исходный код: иначе class-обёртка попадёт внутрь
+            // __VsParseMethod и Roslyn выдаст «} expected» / «Type or namespace expected».
             if (methodBody == null || methodBody.Statements.Count == 0)
-                return code;
+                return "";
 
             // Возвращаем текст всех statements внутри метода и запоминаем, на сколько
             // строк исходного файла смещён извлечённый фрагмент — чтобы диагностики

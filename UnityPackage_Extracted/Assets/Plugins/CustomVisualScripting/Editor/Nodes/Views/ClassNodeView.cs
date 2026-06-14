@@ -242,10 +242,12 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             row.style.paddingTop     = 2;
             row.style.paddingBottom  = 2;
 
-            var typeLabel = new Label(field.Type);
+            var modifierStr = (field.IsPublic ? "+" : "-") + (field.IsStatic ? "S " : " ");
+            var typeLabel = new Label(modifierStr + field.Type);
+            typeLabel.tooltip        = $"{(field.IsPublic ? "public" : "private")}{(field.IsStatic ? " static" : "")} {field.Type}";
             typeLabel.style.color    = FieldTypeColor;
             typeLabel.style.fontSize = 10;
-            typeLabel.style.minWidth = 42f;
+            typeLabel.style.minWidth = 56f;
 
             // Показываем "name = defaultValue" если задано начальное значение
             var displayName = string.IsNullOrEmpty(field.DefaultValue)

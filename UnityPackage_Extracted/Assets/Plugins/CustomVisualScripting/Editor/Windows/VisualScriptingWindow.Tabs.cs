@@ -202,8 +202,14 @@ namespace CustomVisualScripting.Editor.Windows
                 _subspaceRuntimes.TryGetValue(_activeTabId, out var currentRuntime))
                 SyncSubspaceRuntime(currentRuntime);
 
+            // Наследуем метод-контекст от вкладки, из которой открывается подпространство
+            // (метод-вкладка или родительское подпространство) — для фильтрации панелей.
+            var rootMethodId = GetRootMethodIdOfTab(_activeTabId);
+
             var descriptor = EnsureSubspaceTab(nodeId, subspaceKind);
             if (descriptor == null) return;
+            if (!string.IsNullOrEmpty(rootMethodId))
+                _subspaceRootMethodId[descriptor.Id] = rootMethodId;
             if (!_subspaceRuntimes.ContainsKey(descriptor.Id))
                 CreateSubspaceRuntime(descriptor);
             ActivateTab(descriptor.Id);
