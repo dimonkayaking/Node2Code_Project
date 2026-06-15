@@ -175,7 +175,6 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             _showingMethodsCategory = false;
             _showingClassesCategory = false;
             _showingFieldsCategory  = false;
-            _showingUnityCategory   = false;
             _contentContainer.Clear();
 
             switch (GetCurrentContext())

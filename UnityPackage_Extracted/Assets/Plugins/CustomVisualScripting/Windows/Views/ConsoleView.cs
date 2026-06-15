@@ -1,3 +1,4 @@
+using System;
 using System.Text;
 using UnityEngine;
 using UnityEngine.UIElements;
@@ -10,12 +11,17 @@ namespace CustomVisualScripting.Windows.Views
         // ── Данные ────────────────────────────────────────────────────────────
         private readonly StringBuilder _plainSb = new StringBuilder();  // для «Copy All»
         private readonly StringBuilder _richSb  = new StringBuilder();  // для отображения
+        private int _runCount;
 
         // ── UI ────────────────────────────────────────────────────────────────
         private TextField     _textArea;
         private ScrollView    _scrollView;
         private Button        _toggleButton;
         private bool          _isVisible = true;
+
+        // ── Scroll ────────────────────────────────────────────────────────────
+        /// <summary>Ожидается прокрутка в конец при следующем изменении геометрии контента.</summary>
+        private bool _pendingScrollToBottom;
 
         // ── Resize-state ──────────────────────────────────────────────────────
         private bool  _isDragging;
@@ -49,44 +55,66 @@ namespace CustomVisualScripting.Windows.Views
                 _                                  => "[LOG]"
             };
 
-            var line = $"{prefix} {message}";
+            string timestamp = DateTime.Now.ToString("HH:mm:ss");
+            var plainLine = $"{timestamp} {prefix} {message}";
 
             // Плоский текст для «Copy All»
             if (_plainSb.Length > 0) _plainSb.Append('\n');
-            _plainSb.Append(line);
+            _plainSb.Append(plainLine);
 
-            // Rich-text версия с цветом
-            if (_richSb.Length > 0) _richSb.Append('\n');
-            string colorHex = type switch
+            // Rich-text версия: timestamp серый, prefix цветной, тело через <noparse> чтобы
+            // < > в тексте (например, в generics вида List<int>) не ломали rich-text разбор.
+            string prefixColor = type switch
             {
                 LogType.Error or LogType.Exception => "#ff6b6b",
                 LogType.Warning                    => "#ffcc44",
                 _                                  => "#b3b3b3"
             };
-            _richSb.Append($"<color={colorHex}>{EscapeRichText(line)}</color>");
+            if (_richSb.Length > 0) _richSb.Append('\n');
+            _richSb.Append($"<color=#555555>{timestamp}</color> ");
+            _richSb.Append($"<color={prefixColor}>{prefix}</color> ");
+            _richSb.Append($"<noparse>{EscapeNoparse(message)}</noparse>");
 
             _textArea.value = _richSb.ToString();
+            _pendingScrollToBottom = true;
+        }
 
-            // Прокрутка вниз
-            schedule.Execute(() =>
-            {
-                if (_scrollView != null)
-                    _scrollView.verticalScroller.value = _scrollView.verticalScroller.highValue;
-            }).ExecuteLater(20);
+        /// <summary>
+        /// Добавляет визуальный разделитель между сеансами запуска.
+        /// Вызывать из VisualScriptingWindow перед каждым OnRun.
+        /// </summary>
+        public void AddRunSeparator()
+        {
+            _runCount++;
+            const string bar = "────────────────────────────────";
+            string label = $" Run #{_runCount} ";
+
+            if (_plainSb.Length > 0) _plainSb.Append('\n');
+            _plainSb.Append($"──{label}{bar}");
+
+            if (_richSb.Length > 0) _richSb.Append('\n');
+            _richSb.Append($"<color=#3a3a3a>──</color><color=#666666>{label}</color><color=#3a3a3a>{bar}</color>");
+
+            _textArea.value = _richSb.ToString();
+            _pendingScrollToBottom = true;
         }
 
         public new void Clear()
         {
             _plainSb.Clear();
             _richSb.Clear();
+            _runCount = 0;
             _textArea.value = "";
         }
 
-        private static string EscapeRichText(string s)
-        {
-            // Экранируем угловые скобки чтобы случайные <...> в тексте не трактовались как теги
-            return s.Replace("<", "<").Replace(">", ">");
-        }
+        /// <summary>
+        /// Экранирует закрывающий тег &lt;/noparse&gt; внутри пользовательского текста,
+        /// чтобы он не завершил тег досрочно. Угловые скобки самого текста оставляем как есть —
+        /// они отображаются буквально внутри &lt;noparse&gt;...&lt;/noparse&gt;.
+        /// </summary>
+        private static string EscapeNoparse(string s) =>
+            // Разрываем потенциальный закрывающий тег нулевым символом ширины
+            s.Replace("</noparse>", "<​/noparse>");
 
         // ────────────────────────────────────────────────────────────────────
         // Построение UI
@@ -225,6 +253,16 @@ namespace CustomVisualScripting.Windows.Views
 
             _scrollView.Add(_textArea);
             Add(_scrollView);
+
+            // Прокрутка вниз после обновления лейаута (надёжнее ExecuteLater-хака).
+            // GeometryChangedEvent на contentContainer срабатывает, когда высота контента
+            // изменилась после добавления нового текста — именно тогда highValue актуален.
+            _scrollView.contentContainer.RegisterCallback<GeometryChangedEvent>(_ =>
+            {
+                if (!_pendingScrollToBottom) return;
+                _pendingScrollToBottom = false;
+                _scrollView.verticalScroller.value = _scrollView.verticalScroller.highValue;
+            });
         }
 
         // ────────────────────────────────────────────────────────────────────

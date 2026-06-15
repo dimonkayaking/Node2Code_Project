@@ -387,7 +387,8 @@ namespace CustomVisualScripting.Editor.Windows
             
             _toolbar.SetRunMode(true);
             _toolbar.SetStatusWarning("Выполнение...");
-            _errorPanel?.Clear();   // сбрасываем ошибки предыдущего запуска
+            _errorPanel?.Clear();       // сбрасываем ошибки предыдущего запуска
+            _consoleView?.AddRunSeparator(); // визуальный разделитель между запусками
             SyncFullGraphFromView();
             SyncAllMethodRuntimes();
             var code = GenerateCurrentCode();

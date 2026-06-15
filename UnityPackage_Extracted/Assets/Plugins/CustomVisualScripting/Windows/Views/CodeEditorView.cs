@@ -19,6 +19,23 @@ namespace CustomVisualScripting.Windows.Views
 
         private readonly IMGUIContainer _imguiEditor;
         private bool _pendingTabIndent;
+        private bool _pendingShiftTabDedent;
+        private string _pendingAutoIndent; // indent string to insert after Enter
+        private bool _pendingUndo;
+        private bool _pendingRedo;
+
+        // ── Undo / Redo ───────────────────────────────────────────────────────
+        // Каждый снимок: (текст, позиция курсора).  Максимум 200 состояний.
+        private const int MaxUndoHistory = 200;
+        private readonly List<(string text, int cursor)> _undoStack = new(MaxUndoHistory + 1);
+        private readonly List<(string text, int cursor)> _redoStack = new(MaxUndoHistory + 1);
+
+        // Bust-tracking: группируем быстрый ввод в один undo-снимок.
+        // При начале печати запоминаем код ДО изменений; через ~0.8 с простоя фиксируем снимок.
+        private bool   _burstActive;
+        private string _burstStartText;
+        private int    _burstStartCursor;
+        private double _lastTypeTime;
 
         private string _code = string.Empty;
         private string _lineNumbers = "1";
@@ -68,6 +85,7 @@ namespace CustomVisualScripting.Windows.Views
                 _codeContent.text = _code;
                 RebuildLineMetadata();
                 _highlightCodeDirty = true;
+                _scrollPosition = Vector2.zero;   // сбрасываем скролл при внешней установке кода
                 _imguiEditor?.MarkDirtyRepaint();
             }
         }
@@ -157,8 +175,13 @@ namespace CustomVisualScripting.Windows.Views
             RegisterCallback<AttachToPanelEvent>(OnAttachToPanel);
             RegisterCallback<DetachFromPanelEvent>(OnDetachFromPanel);
 
-            // Периодический репейнт для мигания курсора (~530 мс)
-            _imguiEditor.schedule.Execute(() => _imguiEditor.MarkDirtyRepaint()).Every(530);
+            // Периодический репейнт для мигания курсора (~530 мс) — только когда редактор в фокусе.
+            // Также используется для фиксации burst-снимка при паузе в печати.
+            _imguiEditor.schedule.Execute(() =>
+            {
+                CommitBurstIfIdle();
+                if (IsCodeEditorFocused()) _imguiEditor.MarkDirtyRepaint();
+            }).Every(530);
 
             RebuildLineMetadata();
         }
@@ -167,7 +190,8 @@ namespace CustomVisualScripting.Windows.Views
         {
             var root = panel?.visualTree;
             if (root == null) return;
-            root.RegisterCallback<KeyDownEvent>(OnRootTabTrickleDown, TrickleDown.TrickleDown);
+            root.RegisterCallback<KeyDownEvent>(OnRootTabTrickleDown,    TrickleDown.TrickleDown);
+            root.RegisterCallback<KeyDownEvent>(OnRootUndoRedoKeyDown,   TrickleDown.TrickleDown);
             root.RegisterCallback<NavigationMoveEvent>(OnRootNavigationMove, TrickleDown.TrickleDown);
         }
 
@@ -175,7 +199,8 @@ namespace CustomVisualScripting.Windows.Views
         {
             var root = evt.originPanel?.visualTree;
             if (root == null) return;
-            root.UnregisterCallback<KeyDownEvent>(OnRootTabTrickleDown, TrickleDown.TrickleDown);
+            root.UnregisterCallback<KeyDownEvent>(OnRootTabTrickleDown,    TrickleDown.TrickleDown);
+            root.UnregisterCallback<KeyDownEvent>(OnRootUndoRedoKeyDown,   TrickleDown.TrickleDown);
             root.UnregisterCallback<NavigationMoveEvent>(OnRootNavigationMove, TrickleDown.TrickleDown);
         }
 
@@ -194,6 +219,32 @@ namespace CustomVisualScripting.Windows.Views
             SwallowTabAndScheduleIndent(evt);
         }
 
+        /// <summary>
+        /// Перехватывает Ctrl+Z / Ctrl+Y (и Cmd+Z / Cmd+Y на macOS) на фазе trickle-down
+        /// ДО того как IMGUI обработает их нативным undo — мы ставим наш pending-флаг.
+        /// </summary>
+        private void OnRootUndoRedoKeyDown(KeyDownEvent evt)
+        {
+            if (!IsCodeEditorFocused()) return;
+            bool ctrl = evt.ctrlKey || evt.commandKey;
+            if (!ctrl) return;
+
+            if (evt.keyCode == KeyCode.Z)
+            {
+                _pendingUndo = true;
+                evt.StopImmediatePropagation();
+                evt.StopPropagation();
+                _imguiEditor.MarkDirtyRepaint();
+            }
+            else if (evt.keyCode == KeyCode.Y)
+            {
+                _pendingRedo = true;
+                evt.StopImmediatePropagation();
+                evt.StopPropagation();
+                _imguiEditor.MarkDirtyRepaint();
+            }
+        }
+
         private void OnRootNavigationMove(NavigationMoveEvent evt)
         {
             if (!IsCodeEditorFocused()) return;
@@ -210,10 +261,12 @@ namespace CustomVisualScripting.Windows.Views
         private void SwallowTabAndScheduleIndent(KeyDownEvent evt)
         {
             if (evt.keyCode != KeyCode.Tab && evt.character != '\t') return;
-            if (evt.shiftKey) return;
             evt.StopImmediatePropagation();
             evt.StopPropagation();
-            _pendingTabIndent = true;
+            if (evt.shiftKey)
+                _pendingShiftTabDedent = true;
+            else
+                _pendingTabIndent = true;
             _imguiEditor.MarkDirtyRepaint();
         }
 
@@ -294,6 +347,14 @@ namespace CustomVisualScripting.Windows.Views
         private bool DrawScrollContent(Rect contentRect, float lineHeight)
         {
             bool textChanged = false;
+
+            // Idle-burst commit: если пользователь не печатал ~0.8 с — фиксируем snapshot
+            CommitBurstIfIdle();
+
+            // Undo/Redo обрабатываем в самом начале IMGUI-кадра, чтобы editor-state был свежим
+            if (_pendingUndo) { ApplyPendingUndo(); return true; }
+            if (_pendingRedo) { ApplyPendingRedo(); return true; }
+
             var gutterRect = new Rect(contentRect.x, contentRect.y, GutterWidth, contentRect.height);
             EditorLikeDrawRect(gutterRect, new Color(0.10f, 0.10f, 0.10f));
             EditorLikeDrawRect(new Rect(gutterRect.xMax - 1f, gutterRect.y, 1f, gutterRect.height), new Color(0.22f, 0.22f, 0.22f));
@@ -309,7 +370,22 @@ namespace CustomVisualScripting.Windows.Views
 
             EditorGUIUtility.AddCursorRect(codeRect, MouseCursor.Text);
 
+            // Перехватываем Enter в IMGUI до TextArea, чтобы сохранить отступ текущей строки.
+            // TextArea вставит '\n', мы добавим indent следом в ApplyPendingAutoIndent.
+            if (Event.current.type == EventType.KeyDown &&
+                (Event.current.keyCode == KeyCode.Return || Event.current.keyCode == KeyCode.KeypadEnter) &&
+                string.Equals(GUI.GetNameOfFocusedControl(), CodeControlName))
+            {
+                var preEditor = GUIUtility.GetStateObject(typeof(TextEditor), GUIUtility.keyboardControl) as TextEditor;
+                if (preEditor != null)
+                    _pendingAutoIndent = GetCurrentLineIndent(preEditor.cursorIndex);
+            }
+
             // 1. TextArea: рисует фон + курсор + выделение; сам текст прозрачен
+            // Сохраняем состояние ДО TextArea, чтобы при изменении текста знать "старый" курсор для burst
+            string preTextAreaCode   = _code;
+            int    preTextAreaCursor = _capturedCursorIndex;
+
             GUI.SetNextControlName(CodeControlName);
             string next = GUI.TextArea(codeRect, _code, _transparentInputStyle);
             if (next != null && next.Contains('\r'))
@@ -325,6 +401,9 @@ namespace CustomVisualScripting.Windows.Views
 
             if (!string.Equals(next, _code))
             {
+                // Пользователь напечатал что-то — обновляем burst-tracking
+                OnTypingDetected(preTextAreaCode, preTextAreaCursor);
+
                 _code = next;
                 _codeContent.text = _code;
                 RebuildLineMetadata();
@@ -332,9 +411,22 @@ namespace CustomVisualScripting.Windows.Views
                 RebuildHighlightIfNeeded();
                 textChanged = true;
             }
+            else
+            {
+                // Текст не изменился — Enter не был вставлен, сбрасываем pending-indent
+                _pendingAutoIndent = null;
+            }
 
             // Tab-вставку применяем после TextArea, чтобы брать актуальный TextEditor/cursorIndex.
             if (_pendingTabIndent && ApplyPendingTabIndent())
+                textChanged = true;
+
+            // Shift+Tab — дедент текущей строки
+            if (_pendingShiftTabDedent && ApplyPendingShiftTabDedent())
+                textChanged = true;
+
+            // Auto-indent после Enter — добавляем отступ текущей строки
+            if (_pendingAutoIndent != null && ApplyPendingAutoIndent())
                 textChanged = true;
 
             // 2. Label поверх TextArea: прозрачный фон, цветной rich-text
@@ -483,6 +575,9 @@ namespace CustomVisualScripting.Windows.Views
             if (editor == null) return false;
             _code ??= string.Empty;
             int cursor = Mathf.Clamp(_capturedCursorIndex, 0, _code.Length);
+
+            // Сохраняем состояние до изменения, чтобы Ctrl+Z мог его восстановить
+            BeforeManualEdit(cursor);
             int select = Mathf.Clamp(_capturedSelectIndex, 0, _code.Length);
             bool hasSelection = _capturedHasSelection && cursor != select;
 
@@ -502,6 +597,226 @@ namespace CustomVisualScripting.Windows.Views
             RebuildHighlightIfNeeded();
             GUI.changed = true;
             return true;
+        }
+
+        /// <summary>
+        /// Shift+Tab: удаляет до 4 пробелов с начала строки под курсором.
+        /// </summary>
+        private bool ApplyPendingShiftTabDedent()
+        {
+            _pendingShiftTabDedent = false;
+            _code ??= string.Empty;
+
+            int cursor = Mathf.Clamp(_capturedCursorIndex, 0, _code.Length);
+
+            // Сохраняем состояние до изменения, чтобы Ctrl+Z мог его восстановить
+            BeforeManualEdit(cursor);
+            int lineIdx = GetLineAtIndex(cursor);
+            int lineStart = GetLineStartIndex(lineIdx);
+
+            // Сколько пробелов можно убрать (максимум 4)
+            int spacesToRemove = 0;
+            while (spacesToRemove < 4 && lineStart + spacesToRemove < _code.Length &&
+                   _code[lineStart + spacesToRemove] == ' ')
+                spacesToRemove++;
+
+            if (spacesToRemove == 0) return false;
+
+            _code = _code.Remove(lineStart, spacesToRemove);
+            _codeContent.text = _code;
+
+            var editor = GUIUtility.GetStateObject(typeof(TextEditor), GUIUtility.keyboardControl) as TextEditor;
+            if (editor != null)
+            {
+                int newCursor = Mathf.Max(lineStart, cursor - spacesToRemove);
+                editor.text         = _code;
+                editor.cursorIndex  = newCursor;
+                editor.selectIndex  = newCursor;
+            }
+
+            RebuildLineMetadata();
+            _highlightCodeDirty = true;
+            RebuildHighlightIfNeeded();
+            GUI.changed = true;
+            return true;
+        }
+
+        /// <summary>
+        /// Auto-indent: после того как TextArea вставил '\n', добавляем отступ предыдущей строки.
+        /// </summary>
+        private bool ApplyPendingAutoIndent()
+        {
+            var indent = _pendingAutoIndent;
+            _pendingAutoIndent = null;
+
+            if (string.IsNullOrEmpty(indent)) return false;
+
+            var editor = GUIUtility.GetStateObject(typeof(TextEditor), GUIUtility.keyboardControl) as TextEditor;
+            if (editor == null) return false;
+
+            int cursor = Mathf.Clamp(editor.cursorIndex, 0, _code.Length);
+            _code = _code.Insert(cursor, indent);
+            _codeContent.text = _code;
+
+            editor.text        = _code;
+            editor.cursorIndex = cursor + indent.Length;
+            editor.selectIndex = cursor + indent.Length;
+
+            RebuildLineMetadata();
+            _highlightCodeDirty = true;
+            RebuildHighlightIfNeeded();
+            GUI.changed = true;
+            return true;
+        }
+
+        // ── Undo / Redo helpers ───────────────────────────────────────────────
+
+        /// <summary>
+        /// Вызывается перед программным изменением текста (Tab / Shift+Tab).
+        /// Фиксирует активный burst (если есть), затем кладёт текущее состояние в undo-стек.
+        /// </summary>
+        private void BeforeManualEdit(int snapshotCursor)
+        {
+            if (_burstActive)
+            {
+                // Кладём состояние ДО burst, чтобы дополнительный Ctrl+Z мог добраться до него
+                _redoStack.Clear();
+                _undoStack.Add((_burstStartText, _burstStartCursor));
+                if (_undoStack.Count > MaxUndoHistory) _undoStack.RemoveAt(0);
+                _burstActive = false;
+            }
+            // Теперь кладём состояние перед самим Tab/Shift+Tab
+            _redoStack.Clear();
+            _undoStack.Add((_code, snapshotCursor));
+            if (_undoStack.Count > MaxUndoHistory) _undoStack.RemoveAt(0);
+        }
+
+        /// <summary>
+        /// Вызывается при каждом изменении текста через печать (не через Tab/Shift+Tab).
+        /// Если burst ещё не начался — запоминаем состояние ДО этого изменения.
+        /// </summary>
+        private void OnTypingDetected(string preCode, int preCursor)
+        {
+            _lastTypeTime = EditorApplication.timeSinceStartup;
+            if (!_burstActive)
+            {
+                _burstStartText   = preCode;
+                _burstStartCursor = preCursor;
+                _burstActive      = true;
+                _redoStack.Clear();   // новый ввод сбрасывает redo
+            }
+        }
+
+        /// <summary>
+        /// Фиксирует burst в undo-стек, если с последней клавиши прошло ≥ 0.8 с.
+        /// Вызывается в начале каждого IMGUI-кадра и из периодического таймера.
+        /// </summary>
+        private void CommitBurstIfIdle()
+        {
+            if (!_burstActive) return;
+            if (EditorApplication.timeSinceStartup - _lastTypeTime < 0.8) return;
+            _undoStack.Add((_burstStartText, _burstStartCursor));
+            if (_undoStack.Count > MaxUndoHistory) _undoStack.RemoveAt(0);
+            _burstActive = false;
+        }
+
+        private void ApplyPendingUndo()
+        {
+            _pendingUndo = false;
+
+            var editor = GUIUtility.GetStateObject(typeof(TextEditor), GUIUtility.keyboardControl) as TextEditor;
+            int currentCursor = editor != null ? Mathf.Clamp(editor.cursorIndex, 0, _code.Length) : 0;
+
+            string restoreText;
+            int    restoreCursor;
+
+            if (_burstActive)
+            {
+                // Undo в середине burst → откатываем к состоянию ДО burst
+                restoreText   = _burstStartText;
+                restoreCursor = _burstStartCursor;
+                _burstActive  = false;
+                _redoStack.Add((_code, currentCursor));
+                if (_redoStack.Count > MaxUndoHistory) _redoStack.RemoveAt(0);
+            }
+            else if (_undoStack.Count > 0)
+            {
+                _redoStack.Add((_code, currentCursor));
+                if (_redoStack.Count > MaxUndoHistory) _redoStack.RemoveAt(0);
+                var top = _undoStack[_undoStack.Count - 1];
+                _undoStack.RemoveAt(_undoStack.Count - 1);
+                restoreText   = top.text;
+                restoreCursor = top.cursor;
+            }
+            else
+            {
+                return; // нечего отменять
+            }
+
+            ApplySnapshot(restoreText, restoreCursor, editor);
+        }
+
+        private void ApplyPendingRedo()
+        {
+            _pendingRedo = false;
+            if (_redoStack.Count == 0) return;
+
+            var editor = GUIUtility.GetStateObject(typeof(TextEditor), GUIUtility.keyboardControl) as TextEditor;
+            int currentCursor = editor != null ? Mathf.Clamp(editor.cursorIndex, 0, _code.Length) : 0;
+
+            if (_burstActive)
+            {
+                _undoStack.Add((_burstStartText, _burstStartCursor));
+                if (_undoStack.Count > MaxUndoHistory) _undoStack.RemoveAt(0);
+                _burstActive = false;
+            }
+
+            _undoStack.Add((_code, currentCursor));
+            if (_undoStack.Count > MaxUndoHistory) _undoStack.RemoveAt(0);
+
+            var state = _redoStack[_redoStack.Count - 1];
+            _redoStack.RemoveAt(_redoStack.Count - 1);
+
+            ApplySnapshot(state.text, state.cursor, editor);
+        }
+
+        /// <summary>Восстанавливает текст и позицию курсора из snapshot.</summary>
+        private void ApplySnapshot(string text, int cursor, TextEditor editor)
+        {
+            _code = text ?? string.Empty;
+            _codeContent.text = _code;
+            if (editor != null)
+            {
+                editor.text = _code;
+                int safeC = Mathf.Clamp(cursor, 0, _code.Length);
+                editor.cursorIndex = safeC;
+                editor.selectIndex = safeC;
+            }
+            RebuildLineMetadata();
+            _highlightCodeDirty = true;
+            RebuildHighlightIfNeeded();
+            GUI.changed = true;
+        }
+
+        /// <summary>Возвращает ведущие пробелы строки, в которой находится <paramref name="cursorIndex"/>.</summary>
+        private string GetCurrentLineIndent(int cursorIndex)
+        {
+            if (string.IsNullOrEmpty(_code)) return "";
+            int lineIdx   = GetLineAtIndex(cursorIndex);
+            int lineStart = GetLineStartIndex(lineIdx);
+            int i = lineStart;
+            while (i < _code.Length && _code[i] == ' ') i++;
+            return _code.Substring(lineStart, i - lineStart);
+        }
+
+        /// <summary>Возвращает номер строки (0-based) для позиции в строке кода.</summary>
+        private int GetLineAtIndex(int index)
+        {
+            int line = 0;
+            int clampedIndex = Mathf.Min(index, _code?.Length ?? 0);
+            for (int i = 0; i < clampedIndex; i++)
+                if (_code[i] == '\n') line++;
+            return line;
         }
 
         private void EnsureStyles()
@@ -532,7 +847,6 @@ namespace CustomVisualScripting.Windows.Views
                 _lineNumberStyle.padding = new RectOffset(0, 2, _codeStyle.padding.top, _codeStyle.padding.bottom);
             }
 
-            // Стиль для rich-text слоя подсветки (рисуется под прозрачным TextArea)
             if (_richTextStyle == null)
             {
                 _richTextStyle = new GUIStyle(_codeStyle) { richText = true };
@@ -544,7 +858,6 @@ namespace CustomVisualScripting.Windows.Views
                 _richTextStyle.onFocused.background = null;
                 _richTextStyle.onHover.background   = null;
                 _richTextStyle.onActive.background  = null;
-                // Цвет текста по умолчанию (не покрытый тегами): VSCode-светло-серый
                 var defColor = SyntaxHighlighter.DefaultTextColor;
                 _richTextStyle.normal.textColor  = defColor;
                 _richTextStyle.focused.textColor = defColor;
@@ -552,13 +865,9 @@ namespace CustomVisualScripting.Windows.Views
                 _richTextStyle.active.textColor  = defColor;
             }
 
-            // Прозрачный стиль для TextArea — только текст скрыт, фон/курсор/выделение видны.
-            // Фон НЕ обнуляем: TextArea должен сам рисовать свой фон (тёмно-серый),
-            // поверх которого рисуется rich-text Label с прозрачным фоном.
             if (_transparentInputStyle == null)
             {
                 _transparentInputStyle = new GUIStyle(_codeStyle) { richText = false };
-                // Текст прозрачен; курсор/выделение рисуются отдельно (cursorColor/selectionColor)
                 _transparentInputStyle.normal.textColor   = Color.clear;
                 _transparentInputStyle.focused.textColor  = Color.clear;
                 _transparentInputStyle.hover.textColor    = Color.clear;
@@ -587,11 +896,9 @@ namespace CustomVisualScripting.Windows.Views
             float maxScrollX = Mathf.Max(0f, contentWidth - visibleW);
 
             int cursorIndex = Mathf.Clamp(textEditor.cursorIndex, 0, _code.Length);
-            
-            // Get local cursor position relative to the text area
+
             Vector2 localCursorPos = _transparentInputStyle.GetCursorPixelPosition(new Rect(0, 0, 10000, 10000), _codeContent, cursorIndex);
 
-            // Вертикальная позиция
             float lineH = GetActualLineHeight();
             float caretY = OuterVerticalPadding + localCursorPos.y;
             float visibleTop = _scrollPosition.y;
@@ -605,7 +912,6 @@ namespace CustomVisualScripting.Windows.Views
             else if (caretY - verticalMargin < visibleTop)
                 _scrollPosition.y = Mathf.Max(0f, caretY - verticalMargin);
 
-            // Горизонталь: X каретки в координатах контента ScrollView
             float caretContentX = GutterWidth + CodeGapFromGutter + localCursorPos.x;
 
             const float horizontalMargin = 24f;

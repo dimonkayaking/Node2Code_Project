@@ -126,6 +126,37 @@ namespace CustomVisualScripting.Editor.Windows
             _graphAreaSplitter.fixedPaneInitialDimension = savedWidth;
             _graphAreaSplitter.RegisterCallback<GeometryChangedEvent>(evt =>
                 EditorPrefs.SetFloat("NodeToolbarWidthPref", _graphAreaSplitter.fixedPaneInitialDimension));
+
+            // Глобальные горячие клавиши окна
+            root.RegisterCallback<KeyDownEvent>(OnGlobalKeyDown, TrickleDown.TrickleDown);
+        }
+
+        private void OnGlobalKeyDown(KeyDownEvent evt)
+        {
+            // Не перехватываем если фокус в текстовом поле (кроме кода — там Enter/S нужны)
+            bool ctrl = evt.ctrlKey || evt.commandKey;
+
+            // F5 или Ctrl+Enter → Run
+            if (evt.keyCode == KeyCode.F5 ||
+                (ctrl && (evt.keyCode == KeyCode.Return || evt.keyCode == KeyCode.KeypadEnter)))
+            {
+                if (_toolbar != null && _toolbar.RunButton.enabledSelf)
+                {
+                    OnRun();
+                    evt.StopPropagation();
+                }
+                return;
+            }
+
+            // Ctrl+S → Сохранить (Ctrl+Shift+S → Сохранить как)
+            if (ctrl && evt.keyCode == KeyCode.S)
+            {
+                if (evt.shiftKey)
+                    OnSaveAs();
+                else
+                    OnSave();
+                evt.StopPropagation();
+            }
         }
 
         private void RecreateGraphView()

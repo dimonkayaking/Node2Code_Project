@@ -29,79 +29,118 @@ namespace CustomVisualScripting.Windows.Views
             style.borderBottomColor = Color.black;
             style.borderTopWidth = 1;
             style.borderTopColor = Color.black;
-            
-            ParseButton = new Button { text = "Парсить код" };
+
+            // ── Группа: Код ───────────────────────────────────────────────────
+            ParseButton = new Button { text = "Парсить код", tooltip = "Разобрать код в граф" };
             ConfigureToolbarButton(ParseButton);
             ParseButton.style.marginRight = 5;
             Add(ParseButton);
-            
-            GenerateButton = new Button { text = "Сгенерировать" };
+
+            GenerateButton = new Button { text = "Сгенерировать", tooltip = "Сгенерировать код из графа" };
             ConfigureToolbarButton(GenerateButton);
             GenerateButton.style.marginRight = 5;
             Add(GenerateButton);
-            
-            RunButton = new Button { text = "▶ Run" };
+
+            Add(MakeSeparator());
+
+            // ── Группа: Запуск ────────────────────────────────────────────────
+            RunButton = new Button { text = "▶ Run", tooltip = "Запустить (F5 / Ctrl+Enter)" };
             ConfigureToolbarButton(RunButton);
             RunButton.style.marginRight = 5;
             RunButton.style.backgroundColor = new Color(0.2f, 0.6f, 0.2f);
             Add(RunButton);
-            
-            StopButton = new Button { text = "⏹ Stop" };
+
+            StopButton = new Button { text = "⏹ Stop", tooltip = "Остановить выполнение" };
             ConfigureToolbarButton(StopButton);
             StopButton.style.marginRight = 5;
             StopButton.style.backgroundColor = new Color(0.6f, 0.2f, 0.2f);
             StopButton.SetEnabled(false);
             Add(StopButton);
-            
-            SaveButton = new Button { text = "Сохранить" };
+
+            Add(MakeSeparator());
+
+            // ── Группа: Файл ──────────────────────────────────────────────────
+            SaveButton = new Button { text = "Сохранить", tooltip = "Сохранить граф (Ctrl+S)" };
             ConfigureToolbarButton(SaveButton);
             SaveButton.style.marginRight = 5;
             Add(SaveButton);
-            
-            SaveAsButton = new Button { text = "Сохранить как" };
+
+            SaveAsButton = new Button { text = "Сохранить как…", tooltip = "Сохранить в новый файл (Ctrl+Shift+S)" };
             ConfigureToolbarButton(SaveAsButton);
             SaveAsButton.style.marginRight = 5;
             Add(SaveAsButton);
-            
-            LoadButton = new Button { text = "Загрузить" };
+
+            LoadButton = new Button { text = "Загрузить", tooltip = "Загрузить граф из файла" };
             ConfigureToolbarButton(LoadButton);
             LoadButton.style.marginRight = 5;
             Add(LoadButton);
-            
-            ClearButton = new Button { text = "Очистить" };
+
+            ClearButton = new Button { text = "Очистить", tooltip = "Сбросить граф и код" };
             ConfigureToolbarButton(ClearButton);
             ClearButton.style.marginRight = 10;
             Add(ClearButton);
-            
-            _statusLabel = new Label("Готов");
-            _statusLabel.style.color = Color.white;
-            _statusLabel.style.unityFontStyleAndWeight = FontStyle.Normal;
-            _statusLabel.style.flexGrow = 1;
-            _statusLabel.style.unityTextAlign = TextAnchor.MiddleRight;
-            _statusLabel.style.fontSize = 13;
-            Add(_statusLabel);
 
-            // Эффект наведения для Run и Stop (только если активны)
+            // ── Статус ────────────────────────────────────────────────────────
+            var statusContainer = new VisualElement();
+            statusContainer.style.flexGrow = 1;
+            statusContainer.style.alignItems = Align.Center;
+            statusContainer.style.justifyContent = Justify.FlexEnd;
+            statusContainer.style.flexDirection = FlexDirection.Row;
+            statusContainer.style.paddingRight = 4;
+
+            _statusLabel = new Label("Готов");
+            _statusLabel.style.color = new Color(0.85f, 0.85f, 0.85f);
+            _statusLabel.style.unityFontStyleAndWeight = FontStyle.Normal;
+            _statusLabel.style.unityTextAlign = TextAnchor.MiddleRight;
+            _statusLabel.style.fontSize = 12;
+            _statusLabel.style.paddingLeft = 8;
+            _statusLabel.style.paddingRight = 4;
+            _statusLabel.style.paddingTop = 2;
+            _statusLabel.style.paddingBottom = 2;
+            _statusLabel.style.borderLeftWidth = 1;
+            _statusLabel.style.borderLeftColor = new Color(0.4f, 0.4f, 0.4f);
+            statusContainer.Add(_statusLabel);
+            Add(statusContainer);
+
+            // Эффект наведения — читаем цвет лениво в момент MouseEnter (resolvedStyle уже валиден)
             AddHoverEffect(RunButton);
             AddHoverEffect(StopButton);
         }
 
-        private void AddHoverEffect(Button button)
+        /// <summary>Вертикальный разделитель между группами кнопок.</summary>
+        private static VisualElement MakeSeparator()
         {
-            Color normalColor = button.resolvedStyle.backgroundColor;
+            var sep = new VisualElement();
+            sep.style.width            = 1;
+            sep.style.alignSelf        = Align.Stretch;
+            sep.style.marginTop        = 3;
+            sep.style.marginBottom     = 3;
+            sep.style.marginLeft       = 6;
+            sep.style.marginRight      = 6;
+            sep.style.backgroundColor  = new Color(0.38f, 0.38f, 0.38f);
+            return sep;
+        }
+
+        /// <summary>
+        /// Hover-эффект: цвет читается лениво при MouseEnter (resolvedStyle валиден в обработчике),
+        /// чтобы избежать Color.clear при чтении в конструкторе до attach к панели.
+        /// </summary>
+        private static void AddHoverEffect(Button button)
+        {
+            Color? savedColor = null;
+
             button.RegisterCallback<MouseEnterEvent>(_ =>
             {
-                if (button.enabledSelf)
-                {
-                    button.style.backgroundColor = LightenColor(normalColor, 0.07f);
-                }
+                if (!button.enabledSelf) return;
+                savedColor = button.resolvedStyle.backgroundColor;
+                button.style.backgroundColor = LightenColor(savedColor.Value, 0.07f);
             });
+
             button.RegisterCallback<MouseLeaveEvent>(_ =>
             {
-                if (button.enabledSelf)
-                {
-                    button.style.backgroundColor = normalColor;
-                }
+                if (!savedColor.HasValue) return;
+                button.style.backgroundColor = savedColor.Value;
+                savedColor = null;
             });
         }
 
