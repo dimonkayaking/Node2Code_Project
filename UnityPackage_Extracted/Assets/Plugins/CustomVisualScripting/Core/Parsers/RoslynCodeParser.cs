@@ -1017,8 +1017,14 @@ namespace VisualScripting.Core.Parsers
 
                 var rootNode = _graph.Nodes.FirstOrDefault(n => n.Id == rootId);
                 string litId;
-                if (rootNode != null && (IsLiteralNodeType(rootNode.Type) || rootNode.Type == NodeType.UnityVector3))
+                if (rootNode != null && (IsLiteralNodeType(rootNode.Type) || rootNode.Type == NodeType.UnityVector3
+                    || rootNode.Type == NodeType.UnityMethodCall || rootNode.Type == NodeType.UnityFieldAccess))
                 {
+                    // Узел уже представляет вычисленное значение (вызов Unity-метода/доступ
+                    // к полю) — не оборачиваем его в литерал-пустышку, а просто помечаем
+                    // как переменную напрямую, иначе генератор кода и редакторские ноды
+                    // получат «обёртку» с дефолтным значением (например, Vector3(0,0,0))
+                    // вместо реального выражения.
                     rootNode.VariableName = name;
                     rootNode.ValueType = vType;
                     litId = rootId;
@@ -1136,7 +1142,8 @@ namespace VisualScripting.Core.Parsers
                     // ── Стандартное присваивание локальной переменной ─────────────
                     var rootNode = _graph.Nodes.FirstOrDefault(n => n.Id == rootId);
                     string litId;
-                    if (rootNode != null && (IsLiteralNodeType(rootNode.Type) || rootNode.Type == NodeType.UnityVector3) && string.IsNullOrEmpty(rootNode.VariableName))
+                    if (rootNode != null && (IsLiteralNodeType(rootNode.Type) || rootNode.Type == NodeType.UnityVector3
+                        || rootNode.Type == NodeType.UnityMethodCall || rootNode.Type == NodeType.UnityFieldAccess) && string.IsNullOrEmpty(rootNode.VariableName))
                     {
                         rootNode.VariableName = name;
                         if (_variableTypes.TryGetValue(name, out var existingType))

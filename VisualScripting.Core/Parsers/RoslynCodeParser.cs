@@ -675,7 +675,8 @@ namespace VisualScripting.Core.Parsers
 
                 var rootNode = _graph.Nodes.FirstOrDefault(n => n.Id == rootId);
                 string litId;
-                if (rootNode != null && (IsLiteralNodeType(rootNode.Type) || rootNode.Type == NodeType.UnityVector3))
+                if (rootNode != null && (IsLiteralNodeType(rootNode.Type) || rootNode.Type == NodeType.UnityVector3
+                    || rootNode.Type == NodeType.UnityMethodCall || rootNode.Type == NodeType.UnityFieldAccess))
                 {
                     rootNode.VariableName = name;
                     // Исправляем тип: тернарник и другие opaque-выражения создают LiteralString,
@@ -735,7 +736,8 @@ namespace VisualScripting.Core.Parsers
                     // Only rename the RHS node when it is a fresh unnamed literal (e.g. the node
                     // created for the literal 10 in "z = 10"). When the node already has a variable
                     // name it is a variable-reference copy and must NOT be renamed.
-                    if (rootNode != null && (IsLiteralNodeType(rootNode.Type) || rootNode.Type == NodeType.UnityVector3)
+                    if (rootNode != null && (IsLiteralNodeType(rootNode.Type) || rootNode.Type == NodeType.UnityVector3
+                        || rootNode.Type == NodeType.UnityMethodCall || rootNode.Type == NodeType.UnityFieldAccess)
                         && string.IsNullOrEmpty(rootNode.VariableName))
                     {
                         rootNode.VariableName = name;

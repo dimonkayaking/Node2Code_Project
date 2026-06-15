@@ -354,9 +354,11 @@ float w = Mathf.Min(x, y);";
         var result = _parser.Parse(code);
         Assert.False(result.HasErrors, string.Join("\n", result.Errors));
         var output = _generator.Generate(result.Graph);
-        Assert.Contains("Math.Abs", output);
-        Assert.Contains("Math.Max", output);
-        Assert.Contains("Math.Min", output);
+        // Начиная с Этапа 5 Mathf.Abs/Max/Min резолвятся через UnityLibraryRegistry
+        // как настоящие Unity-вызовы и остаются Mathf.*, а не транслируются в Math.*.
+        Assert.Contains("Mathf.Abs", output);
+        Assert.Contains("Mathf.Max", output);
+        Assert.Contains("Mathf.Min", output);
     }
 
     [Fact]
