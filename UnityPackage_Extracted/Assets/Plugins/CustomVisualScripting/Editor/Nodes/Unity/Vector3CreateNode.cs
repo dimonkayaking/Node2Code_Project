@@ -12,22 +12,29 @@ namespace CustomVisualScripting.Editor.Nodes.Unity
         public override NodeType NodeType => NodeType.UnityVector3;
 
         [Input("X")]
-        public float x;
+        public float X;
 
         [Input("Y")]
-        public float y;
+        public float Y;
 
         [Input("Z")]
-        public float z;
+        public float Z;
 
         [Output("Vector3")]
         public Vector3 vector;
 
         public override string name => "Create Vector3";
-        
+
         protected override void Process()
         {
-            vector = new Vector3(x, y, z);
+            vector = new Vector3(X, Y, Z);
+        }
+
+        public override NodeData ToNodeData()
+        {
+            var nodeData = base.ToNodeData();
+            nodeData.ValueType = "Vector3";
+            return nodeData;
         }
     }
 }

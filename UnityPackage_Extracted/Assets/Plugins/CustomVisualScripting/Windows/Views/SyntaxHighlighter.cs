@@ -33,7 +33,9 @@ namespace CustomVisualScripting.Windows.Views
         private static readonly HashSet<string> s_typeKeywords = new(StringComparer.Ordinal)
         {
             "bool","byte","char","decimal","double","float","int","long","object",
-            "sbyte","short","string","uint","ulong","ushort","void","var"
+            "sbyte","short","string","uint","ulong","ushort","void","var",
+            // Встроенные типы Unity-API (категория "Unity" в Create Node)
+            "Vector3","Vector2","GameObject","Transform","Mathf","Input","Time","Random","Debug"
         };
 
         private static readonly StringBuilder s_sb = new();

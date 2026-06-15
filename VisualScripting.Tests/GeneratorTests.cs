@@ -65,6 +65,23 @@ public class GeneratorTests
     }
 
     [Fact]
+    public void Vector3LiteralDeclaration()
+    {
+        var code = "Vector3 pos = new Vector3(1f, 2f, 3f);";
+        var output = Roundtrip(code);
+        Assert.Contains("Vector3 pos = new Vector3(1f, 2f, 3f);", output);
+    }
+
+    [Fact]
+    public void Vector3ZeroArgAndNegativeComponents()
+    {
+        var code = "Vector3 zero = new Vector3();\nVector3 dir = new Vector3(-1f, 0f, -2.5f);";
+        var output = Roundtrip(code);
+        Assert.Contains("Vector3 zero = new Vector3(0f, 0f, 0f);", output);
+        Assert.Contains("Vector3 dir = new Vector3(-1f, 0f, -2.5f);", output);
+    }
+
+    [Fact]
     public void SimpleIfElse()
     {
         var code = @"

@@ -86,7 +86,7 @@ namespace VisualScripting.Core.Generators
                     sb.AppendLine($"{KeywordFor(node.ValueType)} {node.VariableName} = {rhs};");
                     DeclareInCurrentScope(node.VariableName);
                 }
-                else if (IsBinaryOp(node.Type) && !string.IsNullOrEmpty(node.VariableName))
+                else if ((IsBinaryOp(node.Type) || node.Type == NodeType.UnityVector3) && !string.IsNullOrEmpty(node.VariableName))
                 {
                     var type = InferResultType(node);
                     sb.AppendLine($"{KeywordFor(type)} {node.VariableName} = {EmitStmtExpr(node.Id)};");
@@ -167,7 +167,7 @@ namespace VisualScripting.Core.Generators
                 return;
             }
 
-            if (IsBinaryOp(node.Type) || node.Type == NodeType.LogicalNot)
+            if (IsBinaryOp(node.Type) || node.Type == NodeType.LogicalNot || node.Type == NodeType.UnityVector3)
             {
                 var expr = EmitStmtExpr(node.Id);
                 if (IsVisibleInAnyScope(vn))
@@ -605,6 +605,7 @@ namespace VisualScripting.Core.Generators
                     ? $"{f.ToString(System.Globalization.CultureInfo.InvariantCulture)}f"
                     : "0f",
                 "bool" => bool.TryParse(raw, out var b) ? b.ToString().ToLowerInvariant() : "false",
+                "vector3" => $"{FormatVector3Literal(raw)}.ToString()",
                 _ => $"\"{EscapeString(raw)}\""
             };
         }
@@ -698,6 +699,17 @@ namespace VisualScripting.Core.Generators
                 return $"Math.{fn}({EmitExpr(a)}, {EmitExpr(b)})";
             }
 
+            if (node.Type == NodeType.UnityVector3)
+            {
+                var x = Input(nodeId, "X");
+                var y = Input(nodeId, "Y");
+                var z = Input(nodeId, "Z");
+                var xs = x != null ? EmitExpr(x) : "0f";
+                var ys = y != null ? EmitExpr(y) : "0f";
+                var zs = z != null ? EmitExpr(z) : "0f";
+                return $"new Vector3({xs}, {ys}, {zs})";
+            }
+
             return "???";
         }
 
@@ -749,8 +761,26 @@ namespace VisualScripting.Core.Generators
             "string" => $"\"{EscapeString(n.Value)}\"",
             "float" => $"{n.Value}f",
             "bool" => n.Value.ToLowerInvariant(),
+            "Vector3" => FormatVector3Literal(n.Value),
             _ => n.Value
         };
+
+        /// <summary>
+        /// Преобразует значение Vector3-литерала ("x,y,z") в выражение C# <c>new Vector3(x, y, z)</c>.
+        /// При некорректном/пустом значении подставляет 0 для каждой компоненты.
+        /// </summary>
+        private static string FormatVector3Literal(string value)
+        {
+            var parts = (value ?? "").Split(',');
+            string Component(int i)
+            {
+                var raw = i < parts.Length ? parts[i].Trim() : "0";
+                return float.TryParse(raw, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var f)
+                    ? f.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    : "0";
+            }
+            return $"new Vector3({Component(0)}f, {Component(1)}f, {Component(2)}f)";
+        }
 
         /// <summary>Экранирует спецсимволы строки для вставки в строковый литерал C#.</summary>
         private static string EscapeString(string s)
@@ -770,6 +800,7 @@ namespace VisualScripting.Core.Generators
             "float" => "float",
             "bool" => "bool",
             "string" => "string",
+            "Vector3" => "Vector3",
             _ => "int"
         };
 
@@ -827,7 +858,8 @@ namespace VisualScripting.Core.Generators
             if (IsLiteral(n.Type) && !string.IsNullOrEmpty(n.VariableName))
                 return true;
 
-            if ((IsBinaryOp(n.Type) || n.Type == NodeType.LogicalNot || IsBuiltinExpressionNode(n.Type)) &&
+            if ((IsBinaryOp(n.Type) || n.Type == NodeType.LogicalNot || IsBuiltinExpressionNode(n.Type)
+                    || n.Type == NodeType.UnityVector3) &&
                 !string.IsNullOrEmpty(n.VariableName))
                 return true;
 

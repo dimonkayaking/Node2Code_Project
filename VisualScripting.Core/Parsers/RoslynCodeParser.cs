@@ -401,6 +401,7 @@ namespace VisualScripting.Core.Parsers
                 case "float":
                 case "bool":
                 case "string":
+                case "Vector3":
                     return typeStr;
             }
 
@@ -575,6 +576,9 @@ namespace VisualScripting.Core.Parsers
 
         private string CreateDefaultLiteralNode(string typeStr, string variableName)
         {
+            if (typeStr == "Vector3")
+                return CreateVector3Node(new[] { "0", "0", "0" }, variableName);
+
             NodeType type;
             string value;
             switch (typeStr)
@@ -594,6 +598,40 @@ namespace VisualScripting.Core.Parsers
                 VariableName = variableName
             });
             return id;
+        }
+
+        /// <summary>
+        /// Создаёt ноду <see cref="NodeType.UnityVector3"/> (конструктор Vector3) с тремя
+        /// дочерними LiteralFloat-нодами, подключёнными к входным портам X, Y, Z —
+        /// аналогично представлению Vector3CreateNode в редакторе.
+        /// </summary>
+        private string CreateVector3Node(string[] components, string variableName)
+        {
+            var vecId = NewId();
+            _graph.Nodes.Add(new NodeData
+            {
+                Id = vecId,
+                Type = NodeType.UnityVector3,
+                ValueType = "Vector3",
+                VariableName = variableName ?? ""
+            });
+
+            var ports = new[] { "X", "Y", "Z" };
+            for (int i = 0; i < 3; i++)
+            {
+                var compId = NewId();
+                _graph.Nodes.Add(new NodeData
+                {
+                    Id = compId,
+                    Type = NodeType.LiteralFloat,
+                    Value = i < components.Length ? components[i] : "0",
+                    ValueType = "float",
+                    VariableName = ""
+                });
+                AddEdge(compId, GetDataOutPortForNodeId(compId), vecId, ports[i]);
+            }
+
+            return vecId;
         }
 
         private FlowHost? VisitLocalDeclaration(LocalDeclarationStatementSyntax local, string? prevNode, string prevPort)
@@ -637,7 +675,7 @@ namespace VisualScripting.Core.Parsers
 
                 var rootNode = _graph.Nodes.FirstOrDefault(n => n.Id == rootId);
                 string litId;
-                if (rootNode != null && IsLiteralNodeType(rootNode.Type))
+                if (rootNode != null && (IsLiteralNodeType(rootNode.Type) || rootNode.Type == NodeType.UnityVector3))
                 {
                     rootNode.VariableName = name;
                     // Исправляем тип: тернарник и другие opaque-выражения создают LiteralString,
@@ -697,7 +735,7 @@ namespace VisualScripting.Core.Parsers
                     // Only rename the RHS node when it is a fresh unnamed literal (e.g. the node
                     // created for the literal 10 in "z = 10"). When the node already has a variable
                     // name it is a variable-reference copy and must NOT be renamed.
-                    if (rootNode != null && IsLiteralNodeType(rootNode.Type)
+                    if (rootNode != null && (IsLiteralNodeType(rootNode.Type) || rootNode.Type == NodeType.UnityVector3)
                         && string.IsNullOrEmpty(rootNode.VariableName))
                     {
                         rootNode.VariableName = name;
@@ -1554,6 +1592,9 @@ namespace VisualScripting.Core.Parsers
                 case InterpolatedStringExpressionSyntax interpolated:
                     return CreateStringExpressionLiteralNode(interpolated.ToString().Trim(), isRoot ? assignVariableToRoot : null);
 
+                case ObjectCreationExpressionSyntax objCreate when IsVector3Type(objCreate.Type):
+                    return CreateVector3LiteralFromObjectCreation(objCreate, isRoot ? assignVariableToRoot : null, out unsupported);
+
                 default:
                     unsupported = true;
                     _errors.Add(
@@ -2060,6 +2101,74 @@ namespace VisualScripting.Core.Parsers
             return null;
         }
 
+        /// <summary>Проверяет, что тип в <c>new ...(...)</c> — это Vector3 (с/без namespace UnityEngine).</summary>
+        private static bool IsVector3Type(TypeSyntax type)
+        {
+            var name = type.ToString().Trim();
+            return name == "Vector3" || name == "UnityEngine.Vector3";
+        }
+
+        /// <summary>
+        /// Пытается прочитать аргумент конструктора Vector3 как числовой литерал (с возможным
+        /// унарным минусом), например <c>1f</c>, <c>-2.5f</c>, <c>0</c>.
+        /// </summary>
+        private static bool TryGetNumericLiteralText(ExpressionSyntax expr, out string text)
+        {
+            while (expr is ParenthesizedExpressionSyntax paren)
+                expr = paren.Expression;
+
+            var sign = "";
+            if (expr is PrefixUnaryExpressionSyntax pre && pre.IsKind(SyntaxKind.UnaryMinusExpression))
+            {
+                sign = "-";
+                expr = pre.Operand;
+            }
+
+            if (expr is LiteralExpressionSyntax lit && lit.IsKind(SyntaxKind.NumericLiteralExpression))
+            {
+                text = sign + lit.Token.Text.TrimEnd('f', 'F', 'd', 'D', 'm', 'M');
+                return true;
+            }
+
+            text = "";
+            return false;
+        }
+
+        /// <summary>
+        /// Создаёт литерал-ноду UnityVector3 из выражения <c>new Vector3(...)</c>.
+        /// Поддерживаются конструкторы с 0 (zero), 2 (x, y; z=0) и 3 (x, y, z) аргументами,
+        /// каждый аргумент — числовой литерал (опционально со знаком минус).
+        /// </summary>
+        private string? CreateVector3LiteralFromObjectCreation(ObjectCreationExpressionSyntax objCreate, string? variableName, out bool unsupported)
+        {
+            unsupported = false;
+            var args = objCreate.ArgumentList?.Arguments ?? default;
+
+            if (args.Count != 0 && args.Count != 2 && args.Count != 3)
+            {
+                unsupported = true;
+                _errors.Add(
+                    $"Неподдерживаемый конструктор Vector3 ({FormatUserLocation(objCreate.SyntaxTree, objCreate.Span)}): ожидается 0, 2 или 3 аргумента.");
+                return null;
+            }
+
+            var components = new[] { "0", "0", "0" };
+            for (int i = 0; i < args.Count; i++)
+            {
+                var argExpr = args[i].Expression;
+                if (!TryGetNumericLiteralText(argExpr, out var text))
+                {
+                    unsupported = true;
+                    _errors.Add(
+                        $"Неподдерживаемый аргумент конструктора Vector3 ({FormatUserLocation(argExpr.SyntaxTree, argExpr.Span)}): ожидается числовой литерал.");
+                    return null;
+                }
+                components[i] = text;
+            }
+
+            return CreateVector3Node(components, variableName ?? "");
+        }
+
         private string? CreateLiteralFromLiteralExpression(LiteralExpressionSyntax lit, string? variableName)
         {
             NodeType type;
@@ -2136,6 +2245,7 @@ namespace VisualScripting.Core.Parsers
                 NodeType.LogicalAnd or NodeType.LogicalOr or NodeType.LogicalNot => "result",
                 NodeType.IntParse or NodeType.FloatParse or NodeType.ToStringConvert
                     or NodeType.MathfAbs or NodeType.MathfMax or NodeType.MathfMin => "output",
+                NodeType.UnityVector3 => "Vector3",
                 _ => "output"
             };
         }

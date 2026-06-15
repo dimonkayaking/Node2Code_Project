@@ -28,6 +28,7 @@ namespace VisualScripting.Core.Parsers
                     or NodeType.MathfAbs or NodeType.MathfMax or NodeType.MathfMin => "output",
                 NodeType.MethodCall  => "output", // выходной порт call-ноды
                 NodeType.MethodParam => "value",  // выходной порт param-ноды
+                NodeType.UnityVector3 => "Vector3",
                 _ => "output"
             };
         }
