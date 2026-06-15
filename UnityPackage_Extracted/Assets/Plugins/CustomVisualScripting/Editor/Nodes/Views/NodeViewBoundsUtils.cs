@@ -725,6 +725,9 @@ namespace CustomVisualScripting.Editor.Nodes.Views
                 case NodeType.UnityGetPosition:
                 case NodeType.UnitySetPosition:
                 case NodeType.UnityVector3:
+                case NodeType.UnityMethodCall:
+                case NodeType.UnityFieldAccess:
+                case NodeType.UnityFieldSet:
                     return Hex("#8D6E63");
 
                 // Методы

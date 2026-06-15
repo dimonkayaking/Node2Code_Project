@@ -43,6 +43,11 @@ namespace VisualScripting.Core.Models
         UnitySetPosition,
         UnityVector3,
 
+        // Unity API (универсальные ноды): вызов метода / чтение поля-свойства / запись поля-свойства
+        UnityMethodCall,
+        UnityFieldAccess,
+        UnityFieldSet,
+
         // Конвертация
         IntParse,
         FloatParse,

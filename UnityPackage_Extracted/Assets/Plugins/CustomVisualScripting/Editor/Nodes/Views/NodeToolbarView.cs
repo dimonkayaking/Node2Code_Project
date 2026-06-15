@@ -9,7 +9,9 @@ using CustomVisualScripting.Editor.Classes;
 using CustomVisualScripting.Editor.Methods;
 using CustomVisualScripting.Editor.Nodes.Base;
 using CustomVisualScripting.Editor.Nodes.Methods;
+using CustomVisualScripting.Editor.Nodes.Unity;
 using CustomVisualScripting.Editor.Windows;
+using VisualScripting.Core.Models;
 
 namespace CustomVisualScripting.Editor.Nodes.Views
 {
@@ -34,16 +36,20 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         private static readonly Color MethodColor = HexColor("#00BCD4");
         private static readonly Color ClassColor  = HexColor("#4CAF50"); // зелёный — категория «Классы»
         private static readonly Color FieldColor  = HexColor("#FF9800"); // оранжевый — категория «Поля»
+        private static readonly Color UnityColor  = HexColor("#8D6E63"); // коричневый — категория «Unity»
 
         // Состояние текущего экрана
         private bool _showingMethodsCategory;
         private bool _showingClassesCategory;
         private bool _showingFieldsCategory;
+        private bool _showingUnityCategory;
 
         // Развёрнутые классы в панели методов (по ClassId)
         private readonly HashSet<string> _expandedClassIds = new(StringComparer.Ordinal);
         // Развёрнутые классы в панели полей (по ClassId)
         private readonly HashSet<string> _expandedClassIdsForFields = new(StringComparer.Ordinal);
+        // Развёрнутые классы Unity API в панели «Unity» (по ClassName)
+        private readonly HashSet<string> _expandedUnityClassNames = new(StringComparer.Ordinal);
 
         public NodeToolbarView(BaseGraphView graphView)
         {
@@ -170,6 +176,7 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             _showingMethodsCategory = false;
             _showingClassesCategory = false;
             _showingFieldsCategory  = false;
+            _showingUnityCategory   = false;
             _contentContainer.Clear();
 
             switch (GetCurrentContext())
@@ -204,6 +211,8 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             _contentContainer.Add(CreateMethodsCategoryButton());
             // Категория «Поля» — оранжевая
             _contentContainer.Add(CreateFieldsCategoryButton());
+            // Категория «Unity» — коричневая (Mathf, Vector3, Transform, ...)
+            _contentContainer.Add(CreateUnityCategoryButton());
 
             // Разделитель
             var sep = new VisualElement();
@@ -1029,6 +1038,269 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             if (!ok) return;
             cls.Fields.RemoveAll(f => f.Id == fieldId);
             ClassRegistry.Update(cls);
+        }
+
+        // ─── Категория «Unity» (Mathf, Vector3, Transform, ...) ───────────────
+
+        private VisualElement CreateUnityCategoryButton()
+        {
+            var btn = new Button(ShowUnityCategory) { text = "Unity" };
+            StyleCategoryButton(btn, UnityColor);
+            return btn;
+        }
+
+        private void ShowUnityCategory()
+        {
+            _showingUnityCategory = true;
+            _showingMethodsCategory = false;
+            _showingClassesCategory = false;
+            _showingFieldsCategory  = false;
+            _contentContainer.Clear();
+
+            var backBtn = new Button(ShowCategories) { text = "← Назад" };
+            StyleBackButton(backBtn);
+            _contentContainer.Add(backBtn);
+
+            var titleLbl = new Label("Unity");
+            titleLbl.style.fontSize               = 13;
+            titleLbl.style.unityFontStyleAndWeight = FontStyle.Bold;
+            titleLbl.style.color                   = UnityColor;
+            titleLbl.style.paddingBottom           = 6;
+            titleLbl.style.marginBottom            = 6;
+            titleLbl.style.borderBottomWidth       = 1;
+            titleLbl.style.borderBottomColor       = new Color(0.3f, 0.3f, 0.3f);
+            titleLbl.style.unityTextAlign          = TextAnchor.MiddleCenter;
+            _contentContainer.Add(titleLbl);
+
+            foreach (var cls in UnityLibraryRegistry.Classes)
+            {
+                int memberCount = (cls.Fields?.Count ?? 0) + (cls.Methods?.Count ?? 0);
+                if (memberCount == 0) continue;
+
+                _contentContainer.Add(BuildUnityClassGroupHeader(cls, memberCount));
+
+                if (_expandedUnityClassNames.Contains(cls.ClassName))
+                {
+                    foreach (var field in cls.Fields ?? Enumerable.Empty<UnityMemberInfo>())
+                        _contentContainer.Add(BuildUnityFieldRow(cls, field));
+                    foreach (var method in cls.Methods ?? Enumerable.Empty<UnityMemberInfo>())
+                        _contentContainer.Add(BuildUnityMethodRow(cls, method));
+                }
+            }
+        }
+
+        private VisualElement BuildUnityClassGroupHeader(UnityClassInfo cls, int memberCount)
+        {
+            bool expanded = _expandedUnityClassNames.Contains(cls.ClassName);
+
+            var row = new VisualElement();
+            row.style.flexDirection   = FlexDirection.Row;
+            row.style.alignItems      = Align.Center;
+            row.style.marginTop       = 4;
+            row.style.marginBottom    = 2;
+            row.style.paddingLeft     = 4;
+            row.style.paddingRight    = 4;
+            row.style.paddingTop      = 4;
+            row.style.paddingBottom   = 4;
+            row.style.backgroundColor = new Color(0.20f, 0.20f, 0.20f);
+            row.style.borderTopLeftRadius     = 3;
+            row.style.borderTopRightRadius    = 3;
+            row.style.borderBottomLeftRadius  = expanded ? 0 : 3;
+            row.style.borderBottomRightRadius = expanded ? 0 : 3;
+
+            string toggleIcon = expanded ? "−" : "+";
+            var toggleBtn = new Button(() =>
+            {
+                if (_expandedUnityClassNames.Contains(cls.ClassName))
+                    _expandedUnityClassNames.Remove(cls.ClassName);
+                else
+                    _expandedUnityClassNames.Add(cls.ClassName);
+                ShowUnityCategory();
+            });
+            toggleBtn.text                  = toggleIcon;
+            toggleBtn.style.width           = 22;
+            toggleBtn.style.height          = 22;
+            toggleBtn.style.fontSize        = 14;
+            toggleBtn.style.paddingLeft     = 0;
+            toggleBtn.style.paddingRight    = 0;
+            toggleBtn.style.paddingTop      = 0;
+            toggleBtn.style.paddingBottom   = 0;
+            toggleBtn.style.marginRight     = 6;
+            toggleBtn.style.flexShrink      = 0;
+            toggleBtn.style.backgroundColor = new Color(0.28f, 0.28f, 0.28f);
+            toggleBtn.style.unityTextAlign  = TextAnchor.MiddleCenter;
+            ApplyBorder(toggleBtn, UnityColor);
+            row.Add(toggleBtn);
+
+            var nameLabel = new Label($"{cls.DisplayName}  ({memberCount})");
+            nameLabel.style.fontSize               = 12;
+            nameLabel.style.unityFontStyleAndWeight = FontStyle.Bold;
+            nameLabel.style.color                   = UnityColor;
+            nameLabel.style.flexGrow                = 1;
+            nameLabel.style.textOverflow            = TextOverflow.Ellipsis;
+            nameLabel.style.overflow                = Overflow.Hidden;
+            nameLabel.style.whiteSpace              = WhiteSpace.NoWrap;
+            row.Add(nameLabel);
+
+            return row;
+        }
+
+        private VisualElement BuildUnityFieldRow(UnityClassInfo cls, UnityMemberInfo field)
+        {
+            var row = new VisualElement();
+            row.style.flexDirection = FlexDirection.Row;
+            row.style.alignItems    = Align.Center;
+            row.style.marginTop     = 0;
+            row.style.marginBottom  = 1;
+            row.style.paddingLeft   = 10;
+
+            var getBtn = new Button(() => CreateUnityFieldAccessNodeOnGraph(cls, field));
+            getBtn.text                  = field.Name;
+            getBtn.tooltip               = field.Signature;
+            getBtn.style.flexGrow        = 1;
+            getBtn.style.fontSize        = 12;
+            getBtn.style.paddingTop      = 5;
+            getBtn.style.paddingBottom   = 5;
+            getBtn.style.paddingLeft     = 8;
+            getBtn.style.backgroundColor = new Color(0.23f, 0.23f, 0.23f);
+            getBtn.style.unityTextAlign  = TextAnchor.MiddleLeft;
+            getBtn.style.textOverflow    = TextOverflow.Ellipsis;
+            getBtn.style.overflow        = Overflow.Hidden;
+            getBtn.style.whiteSpace      = WhiteSpace.NoWrap;
+            ApplyBorder(getBtn, UnityColor);
+            row.Add(getBtn);
+
+            // Кнопка «Set» — только для изменяемых свойств (Property), не для read-only констант (Field).
+            if (field.Kind == UnityMemberKind.Property)
+            {
+                var setBtn = new Button(() => CreateUnityFieldSetNodeOnGraph(cls, field)) { text = "Set" };
+                setBtn.tooltip               = $"Записать {field.Signature}";
+                setBtn.style.width           = 36;
+                setBtn.style.fontSize        = 10;
+                setBtn.style.paddingLeft     = 0;
+                setBtn.style.paddingRight    = 0;
+                setBtn.style.marginLeft      = 2;
+                setBtn.style.backgroundColor = new Color(0.25f, 0.25f, 0.25f);
+                ApplyBorder(setBtn, new Color(0.5f, 0.5f, 0.5f));
+                row.Add(setBtn);
+            }
+
+            return row;
+        }
+
+        private VisualElement BuildUnityMethodRow(UnityClassInfo cls, UnityMemberInfo method)
+        {
+            var row = new VisualElement();
+            row.style.flexDirection = FlexDirection.Row;
+            row.style.alignItems    = Align.Center;
+            row.style.marginTop     = 0;
+            row.style.marginBottom  = 1;
+            row.style.paddingLeft   = 10;
+
+            var btn = new Button(() => CreateUnityMethodCallNodeOnGraph(cls, method));
+            btn.text                  = method.Name;
+            btn.tooltip               = method.Signature;
+            btn.style.flexGrow        = 1;
+            btn.style.fontSize        = 12;
+            btn.style.paddingTop      = 5;
+            btn.style.paddingBottom   = 5;
+            btn.style.paddingLeft     = 8;
+            btn.style.backgroundColor = new Color(0.23f, 0.23f, 0.23f);
+            btn.style.unityTextAlign  = TextAnchor.MiddleLeft;
+            btn.style.textOverflow    = TextOverflow.Ellipsis;
+            btn.style.overflow        = Overflow.Hidden;
+            btn.style.whiteSpace      = WhiteSpace.NoWrap;
+            ApplyBorder(btn, UnityColor);
+            row.Add(btn);
+
+            return row;
+        }
+
+        /// <summary>
+        /// Выражение получателя по умолчанию для члена экземпляра (transform.position, gameObject.SetActive).
+        /// Для статических членов (Mathf, Vector3, ...) возвращает "" — генератор использует ClassName.
+        /// </summary>
+        private static string DefaultOwnerExpr(UnityClassInfo cls, UnityMemberInfo member)
+        {
+            if (member.IsStatic || string.IsNullOrEmpty(cls.ClassName)) return "";
+            return char.ToLowerInvariant(cls.ClassName[0]) + cls.ClassName.Substring(1);
+        }
+
+        private void CreateUnityFieldAccessNodeOnGraph(UnityClassInfo cls, UnityMemberInfo field)
+        {
+            if (_graphView == null || _graphView.graph == null)
+            {
+                UnityEngine.Debug.LogError("[NodeToolbarView] Graph is not initialized.");
+                return;
+            }
+
+            var node = new UnityFieldAccessNode
+            {
+                ClassName  = cls.ClassName,
+                MemberName = field.Name,
+                FieldType  = field.ReturnType,
+                OwnerExpr  = DefaultOwnerExpr(cls, field)
+            };
+            PlaceAndAddNode(node);
+        }
+
+        private void CreateUnityFieldSetNodeOnGraph(UnityClassInfo cls, UnityMemberInfo field)
+        {
+            if (_graphView == null || _graphView.graph == null)
+            {
+                UnityEngine.Debug.LogError("[NodeToolbarView] Graph is not initialized.");
+                return;
+            }
+
+            var node = new UnityFieldSetNode
+            {
+                ClassName  = cls.ClassName,
+                MemberName = field.Name,
+                FieldType  = field.ReturnType,
+                OwnerExpr  = DefaultOwnerExpr(cls, field)
+            };
+            PlaceAndAddNode(node);
+        }
+
+        private void CreateUnityMethodCallNodeOnGraph(UnityClassInfo cls, UnityMemberInfo method)
+        {
+            if (_graphView == null || _graphView.graph == null)
+            {
+                UnityEngine.Debug.LogError("[NodeToolbarView] Graph is not initialized.");
+                return;
+            }
+
+            var node = new UnityMethodCallNode
+            {
+                ClassName  = cls.ClassName,
+                MemberName = method.Name,
+                OwnerExpr  = DefaultOwnerExpr(cls, method)
+            };
+            node.RefreshFromRegistry();
+            PlaceAndAddNode(node);
+        }
+
+        /// <summary>Размещает ноду на свободном месте графа возле центра экрана и добавляет её.</summary>
+        private void PlaceAndAddNode(CustomBaseNode node)
+        {
+            Rect    graphRect    = _graphView.layout;
+            Vector2 screenCenter = new Vector2(graphRect.width / 2f, graphRect.height / 2f);
+#pragma warning disable 0618
+            Vector2 pan   = (Vector2)_graphView.viewTransform.position;
+            float   scale = _graphView.scale;
+#pragma warning restore 0618
+            Vector2 graphCenter = (screenCenter - pan) / scale;
+            Vector2 finalPos    = FindFreePosition(graphCenter, 220, 100, 25f);
+
+            if (string.IsNullOrEmpty(node.GUID)) node.GUID = Guid.NewGuid().ToString();
+            node.NodeId   = node.GUID;
+            node.position = new Rect(finalPos.x, finalPos.y, 220, 100);
+
+            try { _graphView.AddNode(node); }
+            catch (Exception e)
+            {
+                UnityEngine.Debug.LogError($"[NodeToolbarView] Failed to add Unity node: {e.Message}");
+            }
         }
 
         // ─── Создание call-ноды метода ────────────────────────────────────────

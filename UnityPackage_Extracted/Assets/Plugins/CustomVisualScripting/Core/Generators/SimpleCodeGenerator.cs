@@ -256,6 +256,7 @@ namespace VisualScripting.Core.Generators
                 case NodeType.DebugLog:
                 case NodeType.FieldRef:
                 case NodeType.FieldSet:
+                case NodeType.UnityFieldSet:
                     return false;
                 default:
                     return true;
@@ -322,6 +323,20 @@ namespace VisualScripting.Core.Generators
                     EmitReturn(node, sb, pad);
                     // Нет exec-out → цепочка обрывается естественным образом (next == null).
                     return;
+
+                case NodeType.UnityFieldSet:
+                    EmitUnityFieldSet(node, sb, pad);
+                    break;
+
+                case NodeType.UnityMethodCall:
+                    {
+                        var member = UnityLibraryRegistry.FindMethod(node.Value, node.MemberName);
+                        if (member != null && member.ReturnType == "void" && string.IsNullOrEmpty(node.VariableName))
+                            sb.AppendLine($"{pad}{BuildUnityMethodCallExpr(node.Id)};");
+                        else
+                            EmitValueStatement(node, sb, pad);
+                    }
+                    break;
 
                 default:
                     EmitValueStatement(node, sb, pad);
@@ -396,7 +411,9 @@ namespace VisualScripting.Core.Generators
                     sb.AppendLine($"{pad}{KeywordFor(node.ValueType)} {vn} = {LiteralRhs(node)};");
                 }
             }
-            else if ((IsBinaryOp(node.Type) || node.Type == NodeType.UnityVector3) && !string.IsNullOrEmpty(vn))
+            else if ((IsBinaryOp(node.Type) || node.Type == NodeType.UnityVector3
+                        || node.Type == NodeType.UnityFieldAccess || node.Type == NodeType.UnityMethodCall)
+                     && !string.IsNullOrEmpty(vn))
             {
                 var expr = EmitStmtExpr(node.Id);
                 if (IsVisibleInAnyScope(vn))
@@ -972,7 +989,63 @@ namespace VisualScripting.Core.Generators
                 return $"new Vector3({xs}, {ys}, {zs})";
             }
 
+            if (node.Type == NodeType.UnityFieldAccess)
+                return BuildUnityFieldAccessExpr(nodeId);
+
+            if (node.Type == NodeType.UnityMethodCall)
+                return BuildUnityMethodCallExpr(nodeId);
+
             return "???";
+        }
+
+        /// <summary>Префикс получателя для члена Unity API: OwnerExpression (экземпляр) либо Value (класс — статический член).</summary>
+        private static string ResolveOwnerPrefix(NodeData node) =>
+            !string.IsNullOrEmpty(node.OwnerExpression) ? node.OwnerExpression : node.Value;
+
+        /// <summary>Строит список аргументов вызова метода Unity API из портов param0..param3.</summary>
+        private string BuildUnityCallArgs(string nodeId, UnityMemberInfo member)
+        {
+            var args = new List<string>();
+            for (int i = 0; i < member.Parameters.Count && i < 4; i++)
+            {
+                var port = Input(nodeId, $"param{i}");
+                if (port != null)
+                    args.Add(EmitExpr(port));
+                else if (!string.IsNullOrEmpty(member.Parameters[i].DefaultValue))
+                    args.Add(member.Parameters[i].DefaultValue);
+                else
+                    args.Add("default");
+            }
+            return string.Join(", ", args);
+        }
+
+        /// <summary>Строит выражение вызова метода Unity API (UnityMethodCall) на основе UnityLibraryRegistry.</summary>
+        private string BuildUnityMethodCallExpr(string nodeId)
+        {
+            var node = _map[nodeId];
+            var member = UnityLibraryRegistry.FindMethod(node.Value, node.MemberName);
+            if (member == null)
+                return "???";
+            var prefix = ResolveOwnerPrefix(node);
+            var args = BuildUnityCallArgs(nodeId, member);
+            return $"{prefix}.{node.MemberName}({args})";
+        }
+
+        /// <summary>Строит выражение доступа к полю/свойству Unity API (UnityFieldAccess).</summary>
+        private string BuildUnityFieldAccessExpr(string nodeId)
+        {
+            var node = _map[nodeId];
+            var prefix = ResolveOwnerPrefix(node);
+            return $"{prefix}.{node.MemberName}";
+        }
+
+        /// <summary>Генерирует инструкцию записи в поле/свойство Unity API (UnityFieldSet).</summary>
+        private void EmitUnityFieldSet(NodeData node, StringBuilder sb, string pad)
+        {
+            var prefix = ResolveOwnerPrefix(node);
+            var valEdge = _graph.Edges.FirstOrDefault(e => e.ToNodeId == node.Id && e.ToPort == "value");
+            var rhs = valEdge != null ? EmitExpr(valEdge.FromNodeId) : "default";
+            sb.AppendLine($"{pad}{prefix}.{node.MemberName} = {rhs};");
         }
 
         private string? Input(string nodeId, string port)
@@ -1159,6 +1232,25 @@ namespace VisualScripting.Core.Generators
                     || n.Type == NodeType.UnityVector3) &&
                 !string.IsNullOrEmpty(n.VariableName))
                 return true;
+
+            // UnityFieldSet — всегда оператор (запись поля/свойства).
+            if (n.Type == NodeType.UnityFieldSet)
+                return true;
+
+            // UnityFieldAccess — оператор-точка входа только если результат присваивается переменной.
+            if (n.Type == NodeType.UnityFieldAccess && !string.IsNullOrEmpty(n.VariableName))
+                return true;
+
+            // UnityMethodCall — оператор, если результат присваивается переменной,
+            // либо метод void (вызывается как самостоятельная инструкция).
+            if (n.Type == NodeType.UnityMethodCall)
+            {
+                if (!string.IsNullOrEmpty(n.VariableName))
+                    return true;
+                var member = UnityLibraryRegistry.FindMethod(n.Value, n.MemberName);
+                if (member != null && member.ReturnType == "void")
+                    return true;
+            }
 
             return false;
         }

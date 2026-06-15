@@ -75,6 +75,9 @@ namespace CustomVisualScripting.Editor
                 case NodeType.UnityVector3: return new Vector3CreateNode();
                 case NodeType.UnityGetPosition: return new GetPositionNode();
                 case NodeType.UnitySetPosition: return new SetPositionNode();
+                case NodeType.UnityFieldAccess: return new UnityFieldAccessNode();
+                case NodeType.UnityFieldSet: return new UnityFieldSetNode();
+                case NodeType.UnityMethodCall: return new UnityMethodCallNode();
                 case NodeType.MethodCall:
                 {
                     var callNode = new MethodCallNode();

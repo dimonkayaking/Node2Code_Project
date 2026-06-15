@@ -1169,6 +1169,50 @@ namespace VisualScripting.Core.Parsers
                 }
             }
 
+            // Unity API: вызов void-метода как самостоятельная инструкция, например transform.Translate(...)
+            if (expr is InvocationExpressionSyntax invUnityStmt &&
+                TryResolveUnityMethodCall(invUnityStmt, out var umClassS, out var umOwnerS, out var umMemberS) &&
+                umMemberS.ReturnType == "void")
+            {
+                var callId = CreateUnityMethodCallNode(umClassS, umOwnerS, umMemberS, invUnityStmt, false, null, out var unsupportedCall);
+                if (unsupportedCall || callId == null)
+                    return null;
+
+                var hostCall = new FlowHost { NodeId = callId };
+                if (prevNode != null)
+                    AddEdge(prevNode, prevPort, hostCall.NodeId, PortIds.ExecIn);
+                return hostCall;
+            }
+
+            // Unity API: запись поля/свойства, например transform.position = new Vector3(...)
+            if (expr is AssignmentExpressionSyntax assignField &&
+                assignField.Kind() == SyntaxKind.SimpleAssignmentExpression &&
+                assignField.Left is MemberAccessExpressionSyntax leftMa &&
+                TryResolveUnityFieldAccess(leftMa, out var fsClass, out var fsOwner, out var fsMember))
+            {
+                var rhsId = VisitExpression(assignField.Right, false, null, out var unsupportedRhs);
+                if (unsupportedRhs || rhsId == null)
+                    return null;
+
+                var setId = NewId();
+                _graph.Nodes.Add(new NodeData
+                {
+                    Id = setId,
+                    Type = NodeType.UnityFieldSet,
+                    Value = fsClass,
+                    MemberName = fsMember.Name,
+                    ValueType = fsMember.ReturnType,
+                    OwnerExpression = fsOwner,
+                    VariableName = ""
+                });
+                AddEdge(rhsId, GetDataOutPortForNodeId(rhsId), setId, "value");
+
+                var hostSet = new FlowHost { NodeId = setId };
+                if (prevNode != null)
+                    AddEdge(prevNode, prevPort, hostSet.NodeId, PortIds.ExecIn);
+                return hostSet;
+            }
+
             if (expr is PostfixUnaryExpressionSyntax post &&
                 (post.IsKind(SyntaxKind.PostIncrementExpression) || post.IsKind(SyntaxKind.PostDecrementExpression)) &&
                 post.Operand is IdentifierNameSyntax idPost)
@@ -2034,12 +2078,18 @@ namespace VisualScripting.Core.Parsers
                 case PrefixUnaryExpressionSyntax pre when pre.IsKind(SyntaxKind.UnaryMinusExpression):
                     return VisitUnaryMinus(pre, isRoot, assignVariableToRoot, out unsupported);
 
+                case InvocationExpressionSyntax invUnity when TryResolveUnityMethodCall(invUnity, out var umClass, out var umOwner, out var umMember):
+                    return CreateUnityMethodCallNode(umClass, umOwner, umMember, invUnity, isRoot, assignVariableToRoot, out unsupported);
+
                 case InvocationExpressionSyntax inv:
                     return VisitInvocationExpression(inv, isRoot, assignVariableToRoot, out unsupported);
 
                 case MemberAccessExpressionSyntax mathMem when
                     IsMathfStaticReceiver(mathMem.Expression) || IsSystemMathStaticReceiver(mathMem.Expression):
                     return CreatePassthroughMathLiteral(mathMem.ToString(), isRoot, assignVariableToRoot);
+
+                case MemberAccessExpressionSyntax faMem when TryResolveUnityFieldAccess(faMem, out var faClass, out var faOwner, out var faMember):
+                    return CreateUnityFieldAccessNode(faClass, faOwner, faMember, isRoot, assignVariableToRoot);
 
                 case MemberAccessExpressionSyntax memberAccess:
                 {
@@ -2208,6 +2258,150 @@ namespace VisualScripting.Core.Parsers
 
         private static bool IsLiteralNodeType(NodeType t) =>
             t is NodeType.LiteralBool or NodeType.LiteralInt or NodeType.LiteralFloat or NodeType.LiteralString;
+
+        /// <summary>
+        /// Известные имена переменных-получателей экземплярных членов Unity API
+        /// (например, <c>transform</c>, <c>gameObject</c>) → имя класса в реестре.
+        /// </summary>
+        private static readonly Dictionary<string, string> KnownUnityReceiverTypes = new()
+        {
+            ["transform"] = "Transform",
+            ["gameObject"] = "GameObject",
+        };
+
+        /// <summary>
+        /// Пытается определить класс Unity API (<see cref="UnityLibraryRegistry"/>) и выражение
+        /// получателя для члена (метода/поля), к которому обращается <paramref name="expr"/>.
+        /// Статические члены (например, <c>Mathf.Clamp</c>, <c>Vector3.zero</c>) → ownerExpr = "".
+        /// Члены экземпляра (например, <c>transform.position</c>) → className = "Transform", ownerExpr = "transform".
+        /// </summary>
+        private static bool TryResolveUnityReceiver(ExpressionSyntax expr, out string className, out string ownerExpr)
+        {
+            className = "";
+            ownerExpr = "";
+
+            switch (expr)
+            {
+                case IdentifierNameSyntax id:
+                    var name = id.Identifier.Text;
+                    if (UnityLibraryRegistry.GetClass(name) != null)
+                    {
+                        className = name;
+                        ownerExpr = "";
+                        return true;
+                    }
+                    if (KnownUnityReceiverTypes.TryGetValue(name, out var cls))
+                    {
+                        className = cls;
+                        ownerExpr = name;
+                        return true;
+                    }
+                    return false;
+
+                case MemberAccessExpressionSyntax ma:
+                    var memberName = ma.Name.Identifier.Text;
+                    if (KnownUnityReceiverTypes.TryGetValue(memberName, out var cls2))
+                    {
+                        className = cls2;
+                        ownerExpr = ma.ToString();
+                        return true;
+                    }
+                    return false;
+
+                default:
+                    return false;
+            }
+        }
+
+        /// <summary>Распознаёт чтение поля/свойства встроенного Unity-класса (UnityFieldAccess).</summary>
+        private static bool TryResolveUnityFieldAccess(MemberAccessExpressionSyntax ma, out string className, out string ownerExpr, out UnityMemberInfo member)
+        {
+            className = "";
+            ownerExpr = "";
+            member = null;
+
+            if (!TryResolveUnityReceiver(ma.Expression, out var cls, out var owner))
+                return false;
+
+            var found = UnityLibraryRegistry.FindField(cls, ma.Name.Identifier.Text);
+            if (found == null)
+                return false;
+
+            className = cls;
+            ownerExpr = owner;
+            member = found;
+            return true;
+        }
+
+        /// <summary>Распознаёт вызов метода встроенного Unity-класса (UnityMethodCall).</summary>
+        private static bool TryResolveUnityMethodCall(InvocationExpressionSyntax inv, out string className, out string ownerExpr, out UnityMemberInfo member)
+        {
+            className = "";
+            ownerExpr = "";
+            member = null;
+
+            if (inv.Expression is not MemberAccessExpressionSyntax ma)
+                return false;
+
+            if (!TryResolveUnityReceiver(ma.Expression, out var cls, out var owner))
+                return false;
+
+            var found = UnityLibraryRegistry.FindMethod(cls, ma.Name.Identifier.Text);
+            if (found == null)
+                return false;
+
+            className = cls;
+            ownerExpr = owner;
+            member = found;
+            return true;
+        }
+
+        /// <summary>Создаёт ноду UnityFieldAccess (чтение поля/свойства Unity API).</summary>
+        private string CreateUnityFieldAccessNode(string className, string ownerExpr, UnityMemberInfo member, bool isRoot, string assignVariableToRoot)
+        {
+            var id = NewId();
+            var vn = isRoot && !string.IsNullOrEmpty(assignVariableToRoot) ? assignVariableToRoot : "";
+            _graph.Nodes.Add(new NodeData
+            {
+                Id = id,
+                Type = NodeType.UnityFieldAccess,
+                Value = className,
+                MemberName = member.Name,
+                ValueType = member.ReturnType,
+                OwnerExpression = ownerExpr,
+                VariableName = vn
+            });
+            return id;
+        }
+
+        /// <summary>Создаёт ноду UnityMethodCall (вызов метода Unity API) и подключает аргументы к param0..param3.</summary>
+        private string CreateUnityMethodCallNode(string className, string ownerExpr, UnityMemberInfo member, InvocationExpressionSyntax inv, bool isRoot, string assignVariableToRoot, out bool unsupported)
+        {
+            unsupported = false;
+            var id = NewId();
+            var vn = isRoot && !string.IsNullOrEmpty(assignVariableToRoot) ? assignVariableToRoot : "";
+            _graph.Nodes.Add(new NodeData
+            {
+                Id = id,
+                Type = NodeType.UnityMethodCall,
+                Value = className,
+                MemberName = member.Name,
+                ValueType = member.ReturnType,
+                OwnerExpression = ownerExpr,
+                VariableName = vn
+            });
+
+            var args = inv.ArgumentList.Arguments;
+            for (int i = 0; i < args.Count && i < 4; i++)
+            {
+                var argId = VisitExpression(args[i].Expression, false, null, out unsupported);
+                if (unsupported || argId == null)
+                    return null;
+                AddEdge(argId, GetDataOutPortForNodeId(argId), id, $"param{i}");
+            }
+
+            return id;
+        }
 
         /// <summary>
         /// Создаёт ноду пользовательского вызова метода (<see cref="NodeType.MethodCall"/>)

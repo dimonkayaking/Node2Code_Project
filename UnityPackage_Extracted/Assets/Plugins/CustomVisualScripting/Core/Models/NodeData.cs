@@ -21,5 +21,19 @@ namespace VisualScripting.Core.Models
         /// Хранит исходное выражение (например "x + y") для корректной генерации кода
         /// </summary>
         public string ExpressionOverride { get; set; } = "";
+
+        /// <summary>
+        /// Имя члена встроенного Unity-класса (метод или поле/свойство) для нод
+        /// UnityMethodCall / UnityFieldAccess / UnityFieldSet, например "Clamp" или "position".
+        /// Класс-владелец хранится в <see cref="Value"/> (например "Mathf", "Vector3", "Transform").
+        /// </summary>
+        public string MemberName { get; set; } = "";
+
+        /// <summary>
+        /// Выражение объекта-получателя для нод экземплярных членов Unity API
+        /// (например "transform", "gameObject"). Пусто для статических членов —
+        /// в этом случае в качестве префикса используется <see cref="Value"/> (имя класса).
+        /// </summary>
+        public string OwnerExpression { get; set; } = "";
     }
 }
