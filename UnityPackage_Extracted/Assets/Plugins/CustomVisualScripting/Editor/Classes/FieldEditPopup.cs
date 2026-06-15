@@ -8,7 +8,14 @@ namespace CustomVisualScripting.Editor.Classes
     /// <summary>Всплывающее окно добавления / редактирования поля класса.</summary>
     public class FieldEditPopup : EditorWindow
     {
-        private static readonly string[] Types = { "int", "float", "bool", "string" };
+        private static readonly string[] Types = { "int", "float", "bool", "string", "Vector3", "Transform", "GameObject" };
+
+        /// <summary>
+        /// Ссылочные Unity-типы, для которых поле не может иметь текстовый литерал
+        /// в качестве начального значения (Transform/GameObject — это ссылки на
+        /// компоненты сцены, а не конструируемые значения).
+        /// </summary>
+        private static readonly HashSet<string> ReferenceTypes = new() { "Transform", "GameObject" };
 
         private string _name         = "myField";
         private int    _typeIdx;
@@ -70,9 +77,17 @@ namespace CustomVisualScripting.Editor.Classes
             EditorGUILayout.LabelField("Имя поля", EditorStyles.boldLabel);
             _name = EditorGUILayout.TextField(_name);
 
+            var isRefType = ReferenceTypes.Contains(Types[_typeIdx]);
+
             EditorGUILayout.Space(4);
-            EditorGUILayout.LabelField("Начальное значение (опционально)", EditorStyles.boldLabel);
-            _defaultValue = EditorGUILayout.TextField(_defaultValue);
+            using (new EditorGUI.DisabledScope(isRefType))
+            {
+                var label = isRefType
+                    ? "Начальное значение (недоступно для ссылочных типов)"
+                    : "Начальное значение (опционально)";
+                EditorGUILayout.LabelField(label, EditorStyles.boldLabel);
+                _defaultValue = EditorGUILayout.TextField(isRefType ? "" : _defaultValue);
+            }
 
             // Превью объявления
             EditorGUILayout.Space(6);
@@ -107,7 +122,8 @@ namespace CustomVisualScripting.Editor.Classes
         {
             var modifier = _isPublic ? "public" : "private";
             var staticStr = _isStatic ? " static" : "";
-            var init = string.IsNullOrWhiteSpace(_defaultValue) ? "" : $" = {_defaultValue.Trim()}";
+            var isRefType = ReferenceTypes.Contains(Types[_typeIdx]);
+            var init = (isRefType || string.IsNullOrWhiteSpace(_defaultValue)) ? "" : $" = {_defaultValue.Trim()}";
             return $"{modifier}{staticStr} {Types[_typeIdx]} {_name}{init};";
         }
 
@@ -119,11 +135,16 @@ namespace CustomVisualScripting.Editor.Classes
                 return;
             }
 
+            var type = Types[_typeIdx];
+            // Для ссылочных Unity-типов (Transform/GameObject) начальное значение
+            // как текстовый литерал не имеет смысла — это ссылки на объекты сцены.
+            var defaultValue = ReferenceTypes.Contains(type) ? "" : _defaultValue.Trim();
+
             if (_editing != null)
             {
                 _editing.Name         = _name.Trim();
-                _editing.Type         = Types[_typeIdx];
-                _editing.DefaultValue = _defaultValue.Trim();
+                _editing.Type         = type;
+                _editing.DefaultValue = defaultValue;
                 _editing.IsPublic     = _isPublic;
                 _editing.IsStatic     = _isStatic;
                 _onConfirm?.Invoke(_editing);
@@ -133,8 +154,8 @@ namespace CustomVisualScripting.Editor.Classes
                 var f = new FieldDefinition
                 {
                     Name         = _name.Trim(),
-                    Type         = Types[_typeIdx],
-                    DefaultValue = _defaultValue.Trim(),
+                    Type         = type,
+                    DefaultValue = defaultValue,
                     IsPublic     = _isPublic,
                     IsStatic     = _isStatic
                 };

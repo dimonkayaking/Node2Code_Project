@@ -387,9 +387,10 @@ namespace VisualScripting.Core.Parsers
         }
 
         /// <summary>
-        /// Сопоставляет C#-тип одному из поддерживаемых графом значений (int/float/bool/string).
-        /// Числовые типы шире int сводятся к int, double — к float (с потерей точности).
-        /// Возвращает <c>null</c> для неподдерживаемых типов (var, decimal, char, пользовательские).
+        /// Сопоставляет C#-тип одному из поддерживаемых графом значений (int/float/bool/string/Vector3
+        /// либо одному из ссылочных Unity-типов из <see cref="UnityLibraryRegistry"/> — Transform,
+        /// GameObject и т.п.). Числовые типы шире int сводятся к int, double — к float (с потерей точности).
+        /// Возвращает <c>null</c> для совсем неподдерживаемых типов (var, decimal, char, пользовательские).
         /// </summary>
         private static string MapValueType(string typeStr) => typeStr switch
         {
@@ -406,6 +407,10 @@ namespace VisualScripting.Core.Parsers
                 or "ushort" or "UInt16"
                 or "ulong" or "UInt64"                           => "int",
             "Vector3"                                            => "Vector3",
+            // Ссылочные Unity-типы (Transform, GameObject, ...) — узнаём по UnityLibraryRegistry,
+            // чтобы поле класса не превращалось в "int" и сохраняло свой реальный тип
+            // (public Transform transform; вместо public int transform;).
+            _ when UnityLibraryRegistry.GetClass(typeStr) != null => typeStr,
             _                                                    => null
         };
 

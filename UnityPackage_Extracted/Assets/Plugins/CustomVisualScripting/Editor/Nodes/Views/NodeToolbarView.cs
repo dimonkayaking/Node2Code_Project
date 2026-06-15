@@ -42,7 +42,6 @@ namespace CustomVisualScripting.Editor.Nodes.Views
         private bool _showingMethodsCategory;
         private bool _showingClassesCategory;
         private bool _showingFieldsCategory;
-        private bool _showingUnityCategory;
 
         // Развёрнутые классы в панели методов (по ClassId)
         private readonly HashSet<string> _expandedClassIds = new(StringComparer.Ordinal);
@@ -1051,7 +1050,6 @@ namespace CustomVisualScripting.Editor.Nodes.Views
 
         private void ShowUnityCategory()
         {
-            _showingUnityCategory = true;
             _showingMethodsCategory = false;
             _showingClassesCategory = false;
             _showingFieldsCategory  = false;
