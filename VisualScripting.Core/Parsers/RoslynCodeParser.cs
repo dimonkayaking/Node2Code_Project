@@ -1129,6 +1129,25 @@ namespace VisualScripting.Core.Parsers
                 return BuildIncrementAssignmentSubgraph(assign, out unsupported);
             }
 
+            // Составное присваивание в инкременте for (i += step, f -= 0.1f и т.п.) —
+            // переиспользуем VisitCompoundAssignment без exec-обвязки (prevNode == null).
+            if (expr is AssignmentExpressionSyntax compound &&
+                compound.Left is IdentifierNameSyntax &&
+                compound.Kind() is SyntaxKind.AddAssignmentExpression
+                    or SyntaxKind.SubtractAssignmentExpression
+                    or SyntaxKind.MultiplyAssignmentExpression
+                    or SyntaxKind.DivideAssignmentExpression
+                    or SyntaxKind.ModuloAssignmentExpression)
+            {
+                var host = VisitCompoundAssignment(compound, null, null);
+                if (host == null)
+                {
+                    unsupported = true;
+                    return null;
+                }
+                return host.NodeId;
+            }
+
             return VisitExpression(expr, false, null, out unsupported);
         }
 
