@@ -6,6 +6,29 @@
 
 ---
 
+## Обновление от 16.06.2026 — поддержка Unity API (Этапы 0–9)
+
+**Контекст:** реализована полная поддержка вызовов Unity API (`Vector3`, `Mathf`, `Transform`, `GameObject`, `Time`, `Input`, `Random`, `Debug`, `Object`) в парсере, генераторе и визуальном редакторе — то, что в предыдущей редакции этого документа было помечено как "вне скоупа".
+
+| Этап | Что сделано |
+|------|-------------|
+| **0. Синхронизация `NodeType`** | Зафиксированы и синхронизированы между Core и Unity-копией существующие типы нод, устранены мелкие несоответствия перед началом работы. |
+| **1. `UnityLibraryRegistry`** | Новый реестр (`VisualScripting.Core/Models/UnityLibraryRegistry.cs`, зеркало в Unity-копии) с описанием членов (`UnityMemberInfo`/`UnityClassInfo`) встроенных классов **Mathf, Vector3, Object, GameObject, Transform, Input, Time, Random, Debug** — методы, поля/свойства, статичность, сигнатуры, параметры по умолчанию. |
+| **2. Система типов** | Расширена поддержка `Vector3` и ссылочных Unity-типов (`Transform`, `GameObject`, …) как значений графа (`ValueType`), включая узлы-литералы `Vector3`. |
+| **3. Generic-ноды Unity API** | Добавлены `NodeType.UnityMethodCall` (вызов метода/статической функции), `UnityFieldAccess` (чтение поля/свойства), `UnityFieldSet` (запись поля/свойства), `UnityVector3` (литерал Vector3). Поля `NodeData`: `Value`=ClassName, `MemberName`=метод/поле, `ValueType`=тип результата, `OwnerExpression`=выражение-получатель (`transform`, `this.target`, …), `VariableName`=присваиваемая переменная. |
+| **4. Генератор кода** | `SimpleCodeGenerator` генерирует корректные C#-вызовы для всех трёх generic-нод на основе `UnityLibraryRegistry` (`BuildUnityMethodCallExpr`, `BuildUnityFieldAccessExpr`, `EmitUnityFieldSet`) — например `Vector3.MoveTowards(...)`, `transform.position = ...`, `Mathf.Abs(x)`. |
+| **5. Парсер код → граф** | `RoslynCodeParser` распознаёт вызовы и обращения к полям/свойствам Unity API через `UnityLibraryRegistry` (`TryResolveUnityReceiver`/`TryResolveUnityFieldAccess`/`TryResolveUnityMethodCall`) и строит generic Unity-ноды; `KnownUnityReceiverTypes` позволяет резолвить `transform.*`/`gameObject.*` независимо от объявленного типа поля. |
+| **6. Моки UnityEngine** | Для прогона сгенерированного кода вне Unity (через `CSharpProcessRunner`) добавлены заглушки типов `UnityEngine` (`Vector3`, `Mathf`, `Transform`, `GameObject`, `Debug`, `Time`, …), чтобы код с Unity API компилировался и исполнялся в standalone-раннере. |
+| **7. UI: категория "Unity"** | В `NodeToolbarView` добавлена отдельная категория "Unity" со списком классов/методов из `UnityLibraryRegistry`; попутно исправлен баг round-trip (см. ниже). |
+| **8. Фикс round-trip + тесты** | Исправлен `RoslynCodeParser` (`VisitLocalDeclaration` и простое присваивание): `UnityMethodCall`/`UnityFieldAccess` теперь распознаются как "готовые значения" и не оборачиваются в нулевые литералы-заглушки. Подтверждено round-trip тестами (`DiagUnityRoundTripTest`, обновлённый `GeneratorTests`) и 5 ручными сценариями в Unity (`Vector3.MoveTowards`, `Vector3.zero/up` + `Time.deltaTime`, переприсвоение, цепочка `Mathf`). |
+| **9. Поля класса `Transform`/`GameObject`** | `MapValueType` (Unity-копия `RoslynCodeParser.cs`) распознаёт ссылочные Unity-типы через `UnityLibraryRegistry.GetClass` и не сводит их к `"int"` — поля класса вида `public Transform transform;` теперь парсятся и генерируются с правильным типом. В `FieldEditPopup` добавлены типы `Vector3`/`Transform`/`GameObject` (для ссылочных типов поле "начальное значение" недоступно). |
+
+**Файлы:** `VisualScripting.Core/Models/UnityLibraryRegistry.cs` (+ зеркало), `NodeType.cs`, `NodeData.cs`, `RoslynCodeParser.cs`, `SimpleCodeGenerator.cs` (Core + `UnityPackage_Extracted/.../Core/`), `Editor/Nodes/Views/NodeToolbarView.cs`, `Editor/Classes/FieldEditPopup.cs`.
+
+**Известное расхождение:** Unity-копия `RoslynCodeParser.cs` содержит дополнительную подсистему разбора классов/методов (`ParseAndDiscoverClassMethod`/`ParseMethodBodyGraph`), которой пока нет в Core-копии — синхронизация запланирована отдельным этапом.
+
+---
+
 ## Обновление от 09.04.2026 — Sprint 2 финальная доработка (Backend 2, Егор)
 
 **Контекст:** полная переработка логики переменных по ТЗ тимлида. Избавление от нод `VariableSet`/`VariableDeclaration`, фиксы парсера и локали float.
@@ -95,12 +118,13 @@
 - `if` / `else if` / `else`, вложенные `if`.
 - Циклы **`for`**, **`while`** (в т.ч. вложенные в блоки).
 - Вызовы: **`Console.WriteLine(...)`**, **`int.Parse`**, **`float.Parse`**, **`.ToString()`**, **`Mathf.Abs` / `Max` / `Min`** (через заглушку `Mathf` в обёртке парсера).
+- **Unity API** (см. раздел «Обновление от 16.06.2026»): `Vector3` (литералы, статика, методы вроде `MoveTowards`), `Mathf`, `Transform`/`GameObject` (включая поля класса и `transform.position`/`gameObject.*`), `Time`, `Input`, `Random`, `Debug.Log`, `Object` — через `UnityLibraryRegistry` и generic-ноды `UnityMethodCall`/`UnityFieldAccess`/`UnityFieldSet`/`UnityVector3`.
 
 **Пока не поддерживается или ограничено:**
 
-- Прочие вызовы методов (`Debug.Log`, `Math.Pow`, произвольные API), Unity-специфика (`transform`, `Vector3`, …).
 - Массивы, дженерики, `switch`, `return`, async — по-прежнему вне скоупа.
 - **Рантайм:** ветвление и циклы в `GraphRunner` не исполняются по полной семантике C# (узлы потока пропускаются или упрощённо); для демо опираться на **генератор кода** и тесты.
+- Unity API в Core-копии `RoslynCodeParser.cs` пока не покрывает разбор пользовательских классов/методов (`ParseAndDiscoverClassMethod`/`ParseMethodBodyGraph`) — эта подсистема есть только в Unity-копии, синхронизация в планах.
 
 Оператор степени в стиле Python **не входит**.
 
@@ -108,7 +132,6 @@
 
 ## Что НЕ входит в текущий скоуп (напоминание)
 
-- Произвольные вызовы методов и Unity API, кроме перечисленных выше
 - Массивы, коллекции, обобщённые типы
 - `switch`, `return`, корутины, async
 - Полное пошаговое исполнение циклов/ветвлений в `GraphRunner` без доработки Backend 2
