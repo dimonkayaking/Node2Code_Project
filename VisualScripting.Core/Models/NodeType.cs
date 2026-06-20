@@ -48,6 +48,12 @@ namespace VisualScripting.Core.Models
         UnityFieldAccess,
         UnityFieldSet,
 
+        // Разбивка Vector3 на компоненты (.x / .y / .z)
+        Vector3Component,
+
+        // Заглушка — произвольный код вставляется в генерацию as-is (неизвестный код при парсинге)
+        CodeSnippet,
+
         // Конвертация
         IntParse,
         FloatParse,
@@ -63,12 +69,4 @@ namespace VisualScripting.Core.Models
         MethodParam,
         ReturnValue,
 
-        // Классы
-        ClassNode,
-        MethodOwner,
-
-        // Поля класса
-        FieldRef,   // чтение статического поля — output-порт
-        FieldSet    // запись статического поля — exec-нода + value-вход
-    }
-}
+     

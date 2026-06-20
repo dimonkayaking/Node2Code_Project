@@ -10,6 +10,7 @@ using CustomVisualScripting.Editor.Methods;
 using CustomVisualScripting.Editor.Nodes.Base;
 using CustomVisualScripting.Editor.Nodes.Methods;
 using CustomVisualScripting.Editor.Nodes.Unity;
+using CustomVisualScripting.Editor.Nodes.Snippets;
 using CustomVisualScripting.Editor.Windows;
 using VisualScripting.Core.Models;
 
@@ -1069,6 +1070,28 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             titleLbl.style.unityTextAlign          = TextAnchor.MiddleCenter;
             _contentContainer.Add(titleLbl);
 
+            // ── Утилиты ────────────────────────────────────────────────
+            var utilHeader = new Label("Утилиты");
+            utilHeader.style.fontSize               = 11;
+            utilHeader.style.unityFontStyleAndWeight = FontStyle.Bold;
+            utilHeader.style.color                   = new Color(0.7f, 0.7f, 0.7f);
+            utilHeader.style.paddingLeft             = 4;
+            utilHeader.style.paddingTop              = 4;
+            utilHeader.style.paddingBottom           = 2;
+            _contentContainer.Add(utilHeader);
+
+            var vec3Btn = new Button(CreateVector3ComponentNodeOnGraph) { text = "Vector3 Component (.x/.y/.z)" };
+            vec3Btn.style.unityTextAlign  = TextAnchor.MiddleLeft;
+            vec3Btn.style.paddingLeft     = 8;
+            vec3Btn.style.marginBottom    = 2;
+            _contentContainer.Add(vec3Btn);
+
+            var snippetBtn = new Button(CreateCodeSnippetNodeOnGraph) { text = "Code Snippet" };
+            snippetBtn.style.unityTextAlign = TextAnchor.MiddleLeft;
+            snippetBtn.style.paddingLeft    = 8;
+            snippetBtn.style.marginBottom   = 6;
+            _contentContainer.Add(snippetBtn);
+
             foreach (var cls in UnityLibraryRegistry.Classes)
             {
                 int memberCount = (cls.Fields?.Count ?? 0) + (cls.Methods?.Count ?? 0);
@@ -1274,6 +1297,28 @@ namespace CustomVisualScripting.Editor.Nodes.Views
                 OwnerExpr  = DefaultOwnerExpr(cls, method)
             };
             node.RefreshFromRegistry();
+            PlaceAndAddNode(node);
+        }
+
+        private void CreateVector3ComponentNodeOnGraph()
+        {
+            if (_graphView == null || _graphView.graph == null)
+            {
+                UnityEngine.Debug.LogError("[NodeToolbarView] Graph is not initialized.");
+                return;
+            }
+            var node = new Vector3ComponentNode { Component = "x" };
+            PlaceAndAddNode(node);
+        }
+
+        private void CreateCodeSnippetNodeOnGraph()
+        {
+            if (_graphView == null || _graphView.graph == null)
+            {
+                UnityEngine.Debug.LogError("[NodeToolbarView] Graph is not initialized.");
+                return;
+            }
+            var node = new CodeSnippetNode();
             PlaceAndAddNode(node);
         }
 

@@ -147,6 +147,22 @@ namespace VisualScripting.Core.Models
             // ───────────────────────────── Векторы ────────────────────────────────
             new UnityClassInfo
             {
+                ClassName = "Vector2",
+                DisplayName = "Vector2",
+                Category = "Векторы",
+                Fields =
+                {
+                    new UnityMemberInfo { Name = "zero",  Kind = UnityMemberKind.Field, ReturnType = "Vector2", IsStatic = true, Signature = "Vector2.zero",  Mvp = true },
+                    new UnityMemberInfo { Name = "one",   Kind = UnityMemberKind.Field, ReturnType = "Vector2", IsStatic = true, Signature = "Vector2.one",   Mvp = true },
+                    new UnityMemberInfo { Name = "up",    Kind = UnityMemberKind.Field, ReturnType = "Vector2", IsStatic = true, Signature = "Vector2.up",    Mvp = true },
+                    new UnityMemberInfo { Name = "down",  Kind = UnityMemberKind.Field, ReturnType = "Vector2", IsStatic = true, Signature = "Vector2.down",  Mvp = true },
+                    new UnityMemberInfo { Name = "left",  Kind = UnityMemberKind.Field, ReturnType = "Vector2", IsStatic = true, Signature = "Vector2.left",  Mvp = true },
+                    new UnityMemberInfo { Name = "right", Kind = UnityMemberKind.Field, ReturnType = "Vector2", IsStatic = true, Signature = "Vector2.right", Mvp = true }
+                }
+            },
+
+            new UnityClassInfo
+            {
                 ClassName = "Vector3",
                 DisplayName = "Vector3",
                 Category = "Векторы",
@@ -200,6 +216,43 @@ namespace VisualScripting.Core.Models
                 }
             },
 
+            // ───────────────────────── Quaternion ─────────────────────────────────
+            new UnityClassInfo
+            {
+                ClassName = "Quaternion",
+                DisplayName = "Quaternion",
+                Category = "Векторы",
+                Fields =
+                {
+                    new UnityMemberInfo { Name = "identity", Kind = UnityMemberKind.Field, ReturnType = "Quaternion", IsStatic = true, Signature = "Quaternion.identity", Mvp = true }
+                },
+                Methods =
+                {
+                    new UnityMemberInfo
+                    {
+                        Name = "Euler", Kind = UnityMemberKind.Method, ReturnType = "Quaternion", IsStatic = true,
+                        Parameters =
+                        {
+                            new UnityParamInfo { Name = "x", Type = "float" },
+                            new UnityParamInfo { Name = "y", Type = "float" },
+                            new UnityParamInfo { Name = "z", Type = "float" }
+                        },
+                        Signature = "Quaternion.Euler(float x, float y, float z)", Mvp = true
+                    }
+                }
+            },
+
+            // ───────────────────────── Collider2D (Физика) ────────────────────────
+            new UnityClassInfo
+            {
+                ClassName = "Collider2D",
+                DisplayName = "Collider2D",
+                Category = "Физика",
+                // Члены добавляются по мере необходимости; сейчас достаточно регистрации типа
+                Fields = { },
+                Methods = { }
+            },
+
             // ───────────────────────── Object (Создание/удаление) ─────────────────
             new UnityClassInfo
             {
@@ -213,6 +266,17 @@ namespace VisualScripting.Core.Models
                         Name = "Instantiate", Kind = UnityMemberKind.Method, ReturnType = "GameObject", IsStatic = true,
                         Parameters = { new UnityParamInfo { Name = "original", Type = "GameObject" } },
                         Signature = "Object.Instantiate(GameObject original)", Mvp = true
+                    },
+                    new UnityMemberInfo
+                    {
+                        Name = "Instantiate", Kind = UnityMemberKind.Method, ReturnType = "GameObject", IsStatic = true,
+                        Parameters =
+                        {
+                            new UnityParamInfo { Name = "original",  Type = "GameObject" },
+                            new UnityParamInfo { Name = "position",  Type = "Vector3"    },
+                            new UnityParamInfo { Name = "rotation",  Type = "Quaternion" }
+                        },
+                        Signature = "Object.Instantiate(GameObject original, Vector3 position, Quaternion rotation)", Mvp = true
                     },
                     new UnityMemberInfo
                     {
@@ -361,9 +425,22 @@ namespace VisualScripting.Core.Models
         public static List<UnityClassInfo> GetByCategory(string category) =>
             Classes.FindAll(c => c.Category == category);
 
-        /// <summary>Найти метод по имени класса и имени метода.</summary>
+        /// <summary>Найти метод по имени класса и имени метода (первый найденный — без учёта перегрузок).</summary>
         public static UnityMemberInfo? FindMethod(string className, string methodName) =>
             GetClass(className)?.Methods.Find(m => m.Name == methodName);
+
+        /// <summary>
+        /// Найти метод с учётом перегрузки по количеству аргументов.
+        /// Сначала ищет точное совпадение по имени + числу параметров,
+        /// затем возвращает первый метод с таким именем (fallback).
+        /// </summary>
+        public static UnityMemberInfo? FindMethodByArgCount(string className, string methodName, int argCount)
+        {
+            var cls = GetClass(className);
+            if (cls == null) return null;
+            var exact = cls.Methods.Find(m => m.Name == methodName && m.Parameters.Count == argCount);
+            return exact ?? cls.Methods.Find(m => m.Name == methodName);
+        }
 
         /// <summary>Найти поле/свойство по имени класса и имени члена.</summary>
         public static UnityMemberInfo? FindField(string className, string fieldName) =>

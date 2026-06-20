@@ -12,14 +12,13 @@ namespace VisualScripting.Core.Models
         public Dictionary<string, string> InputConnections { get; set; } = new Dictionary<string, string>();
         public Dictionary<string, string> ExecutionFlow { get; set; } = new Dictionary<string, string>();
 
-        public GraphData? ConditionSubGraph { get; set; }
-        public GraphData? BodySubGraph { get; set; }
-        public GraphData? InitSubGraph { get; set; }
-        public GraphData? IncrementSubGraph { get; set; }
+        public GraphData ConditionSubGraph { get; set; }
+        public GraphData BodySubGraph { get; set; }
+        public GraphData InitSubGraph { get; set; }
+        public GraphData IncrementSubGraph { get; set; }
 
         /// <summary>
-        /// Stores the original source expression text (e.g. "x + y") for robust code generation
-        /// when the node graph edges may not be fully preserved (e.g. after editor round-trip).
+        /// Хранит исходное выражение (например "x + y") для корректной генерации кода
         /// </summary>
         public string ExpressionOverride { get; set; } = "";
 
@@ -36,5 +35,13 @@ namespace VisualScripting.Core.Models
         /// в этом случае в качестве префикса используется <see cref="Value"/> (имя класса).
         /// </summary>
         public string OwnerExpression { get; set; } = "";
+
+        /// <summary>
+        /// Количество параметров перегрузки метода Unity API (UnityMethodCall).
+        /// Используется при загрузке для выбора правильной перегрузки из реестра,
+        /// когда метод существует в нескольких вариантах (например Instantiate(1) vs Instantiate(3)).
+        /// 0 — не задано (используется первое совпадение по имени).
+        /// </summary>
+        public int ParamCount { get; set; }
     }
 }

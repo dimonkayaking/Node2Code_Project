@@ -35,5 +35,13 @@ namespace VisualScripting.Core.Models
         /// в этом случае в качестве префикса используется <see cref="Value"/> (имя класса).
         /// </summary>
         public string OwnerExpression { get; set; } = "";
+
+        /// <summary>
+        /// Количество параметров перегрузки метода Unity API (UnityMethodCall).
+        /// Используется при загрузке для выбора правильной перегрузки из реестра,
+        /// когда метод существует в нескольких вариантах (например Instantiate(1) vs Instantiate(3)).
+        /// 0 — не задано (используется первое совпадение по имени).
+        /// </summary>
+        public int ParamCount { get; set; }
     }
 }

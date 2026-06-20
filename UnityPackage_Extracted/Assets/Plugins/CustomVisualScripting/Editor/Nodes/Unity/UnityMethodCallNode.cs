@@ -99,6 +99,7 @@ namespace CustomVisualScripting.Editor.Nodes.Unity
             data.MemberName = MemberName;
             data.ValueType = ReturnType;
             data.OwnerExpression = OwnerExpr;
+            data.ParamCount = ActiveParamCount;
             return data;
         }
 
@@ -109,13 +110,18 @@ namespace CustomVisualScripting.Editor.Nodes.Unity
             MemberName = data.MemberName ?? "";
             ReturnType = data.ValueType ?? "void";
             OwnerExpr  = data.OwnerExpression ?? "";
+            // Предзагружаем сохранённое число параметров для разрешения overload в RefreshFromRegistry
+            if (data.ParamCount > 0) ActiveParamCount = data.ParamCount;
             RefreshFromRegistry();
         }
 
         /// <summary>Обновляет ActiveParamCount/ParamNames/ParamTypes/ReturnType из реестра Unity API.</summary>
         public void RefreshFromRegistry()
         {
-            var member = UnityLibraryRegistry.FindMethod(ClassName, MemberName);
+            // Используем ActiveParamCount (если >0) для выбора нужной перегрузки (Instantiate x1 vs x3)
+            var member = ActiveParamCount > 0
+                ? UnityLibraryRegistry.FindMethodByArgCount(ClassName, MemberName, ActiveParamCount)
+                : UnityLibraryRegistry.FindMethod(ClassName, MemberName);
             if (member == null) return;
 
             ReturnType       = member.ReturnType;

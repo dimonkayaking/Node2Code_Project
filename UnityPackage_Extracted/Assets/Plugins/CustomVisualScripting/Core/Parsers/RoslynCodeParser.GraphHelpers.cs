@@ -26,9 +26,10 @@ namespace VisualScripting.Core.Parsers
                 NodeType.LogicalAnd or NodeType.LogicalOr or NodeType.LogicalNot => "result",
                 NodeType.IntParse or NodeType.FloatParse or NodeType.ToStringConvert
                     or NodeType.MathfAbs or NodeType.MathfMax or NodeType.MathfMin => "output",
-                NodeType.MethodCall  => "output", // выходной порт call-ноды
-                NodeType.MethodParam => "value",  // выходной порт param-ноды
-                NodeType.UnityVector3 => "Vector3",
+                NodeType.MethodCall      => "output",  // выходной порт call-ноды
+                NodeType.MethodParam     => "value",   // выходной порт param-ноды
+                NodeType.UnityVector3    => "Vector3",
+                NodeType.Vector3Component => "value",  // float-компонент x/y/z
                 _ => "output"
             };
         }
@@ -67,7 +68,9 @@ namespace VisualScripting.Core.Parsers
 
             return node.Type is NodeType.FlowIf or NodeType.FlowElse or NodeType.FlowFor or NodeType.FlowWhile
                 or NodeType.ConsoleWriteLine or NodeType.DebugLog
-                or NodeType.FieldRef or NodeType.FieldSet or NodeType.MethodCall;
+                or NodeType.FieldRef or NodeType.FieldSet or NodeType.MethodCall
+                or NodeType.UnityMethodCall or NodeType.UnityFieldSet  // Unity-вызовы как statement
+                or NodeType.CodeSnippet;                                // заглушки
         }
 
         private bool SupportsExecIn(string nodeId)
@@ -78,7 +81,9 @@ namespace VisualScripting.Core.Parsers
 
             return node.Type is NodeType.FlowIf or NodeType.FlowElse or NodeType.FlowFor or NodeType.FlowWhile
                 or NodeType.ConsoleWriteLine or NodeType.DebugLog or NodeType.ReturnValue
-                or NodeType.FieldRef or NodeType.FieldSet or NodeType.MethodCall;
+                or NodeType.FieldRef or NodeType.FieldSet or NodeType.MethodCall
+                or NodeType.UnityMethodCall or NodeType.UnityFieldSet  // Unity-вызовы как statement
+                or NodeType.CodeSnippet;                                // заглушки
         }
 
         private string NewId() => $"node_{_nodeCounter++}";

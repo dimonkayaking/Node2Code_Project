@@ -1,3 +1,4 @@
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -6,43 +7,82 @@ using VisualScripting.Core.Models;
 
 namespace VisualScripting.Core.Generators
 {
-    public class SimpleCodeGenerator
+    public partial class SimpleCodeGenerator
     {
+        private const string SubGraphVariableRefMarker = "__varref:";
         private Dictionary<string, NodeData> _map = new();
         private GraphData _graph = new();
         private Stack<HashSet<string>> _scopeStack = new();
         private HashSet<string> _emitted = new();
 
-        private void PushScope() => _scopeStack.Push(new HashSet<string>());
-
-        private void PopScope()
-        {
-            if (_scopeStack.Count > 1)
-                _scopeStack.Pop();
-        }
-
-        private void DeclareInCurrentScope(string variableName)
-        {
-            if (string.IsNullOrEmpty(variableName))
-                return;
-            if (_scopeStack.Count == 0)
-                PushScope();
-            _scopeStack.Peek().Add(variableName);
-        }
-
-        private bool IsVisibleInAnyScope(string variableName)
-        {
-            if (string.IsNullOrEmpty(variableName))
-                return false;
-            foreach (var scope in _scopeStack)
-            {
-                if (scope.Contains(variableName))
-                    return true;
-            }
-            return false;
-        }
+        // Метаданные пользовательских методов; задаётся через перегрузку Generate/GenerateMethodBody.
+        private IReadOnlyDictionary<string, MethodInfo> _methods = new Dictionary<string, MethodInfo>();
 
         public string GenerateCode(GraphData graph) => Generate(graph);
+
+        /// <summary>Генерация с учётом метаданных пользовательских методов.</summary>
+        public string Generate(GraphData graph, IReadOnlyDictionary<string, MethodInfo> methods)
+        {
+            _methods = methods ?? new Dictionary<string, MethodInfo>();
+            var result = Generate(graph);
+            _methods = new Dictionary<string, MethodInfo>(); // сбрасываем после использования
+            return result;
+        }
+
+        /// <summary>
+        /// Генерирует тело метода (без сигнатуры и фигурных скобок).
+        /// Параметры метода трактуются как уже объявленные переменные.
+        /// </summary>
+        public string GenerateMethodBody(GraphData bodyGraph, MethodInfo def,
+            IReadOnlyDictionary<string, MethodInfo>? methods = default)
+        {
+            if (bodyGraph == null || bodyGraph.Nodes == null || bodyGraph.Nodes.Count == 0)
+            {
+                return def.ReturnType == "void"
+                    ? "    // Тело пусто"
+                    : $"    return {GetDefaultValue(def.ReturnType)};";
+            }
+
+            _methods    = methods ?? new Dictionary<string, MethodInfo>();
+            _graph      = bodyGraph;
+            _map        = bodyGraph.Nodes.ToDictionary(n => n.Id);
+            _scopeStack = new Stack<HashSet<string>>();
+            PushScope();
+            _emitted    = new HashSet<string>();
+
+            // Параметры уже объявлены в сигнатуре — вносим в скоуп
+            if (def.ParamNames != null)
+                foreach (var pn in def.ParamNames)
+                    if (!string.IsNullOrEmpty(pn)) DeclareInCurrentScope(pn);
+
+            var hasIncomingExec = new HashSet<string>(
+                bodyGraph.Edges.Where(e => IsExecInPort(e.ToPort)).Select(e => e.ToNodeId));
+
+            var roots = bodyGraph.Nodes
+                .Where(n => n.Type != NodeType.MethodParam)          // param-ноды не операторы
+                .Where(n => !hasIncomingExec.Contains(n.Id))
+                .Where(n => IsStatementEntryNode(n))
+                .Where(n => !IsChainedElseBranchTarget(n.Id))
+                .ToList();
+
+            var sb = new StringBuilder();
+            var orderedRoots = TopologicallyOrderRoots(roots);
+            foreach (var root in orderedRoots)
+                EmitChain(root.Id, sb, 1);
+
+            // Для non-void методов без явного Return-узла добавляем fallback return.
+            // Если в графе есть хотя бы одна ReturnValue-нода — return уже эмитирован
+            // внутри EmitChain → EmitReturn.
+            if (def.ReturnType != "void" &&
+                !bodyGraph.Nodes.Any(n => n.Type == NodeType.ReturnValue))
+            {
+                sb.AppendLine($"    return {GetDefaultValue(def.ReturnType)};");
+            }
+
+            var result = sb.ToString().TrimEnd();
+            _methods = new Dictionary<string, MethodInfo>(); // сбрасываем
+            return result;
+        }
 
         public string Generate(GraphData graph)
         {
@@ -58,7 +98,6 @@ namespace VisualScripting.Core.Generators
             var hasIncomingExec = new HashSet<string>(
                 graph.Edges.Where(e => IsExecInPort(e.ToPort)).Select(e => e.ToNodeId));
 
-            // Первая инструкция в методе не имеет входящего execIn; одиночный Console.WriteLine тоже.
             var roots = graph.Nodes
                 .Where(n => !hasIncomingExec.Contains(n.Id) && IsStatementEntryNode(n))
                 .Where(n => !IsChainedElseBranchTarget(n.Id))
@@ -67,33 +106,162 @@ namespace VisualScripting.Core.Generators
             if (roots.Count == 0)
                 return GenerateFallback();
 
+            // Порядок создания нод в графе ни к чему не обязывает: надо эмитить источники
+            // данных раньше их потребителей, иначе в коде появятся обращения к переменным
+            // до их объявления.
+            var orderedRoots = TopologicallyOrderRoots(roots);
+
             var sb = new StringBuilder();
-            foreach (var root in roots)
+            foreach (var root in orderedRoots)
                 EmitChain(root.Id, sb, 0);
 
             return sb.ToString().TrimEnd();
         }
 
+        /// <summary>
+        /// Упорядочивает корни так, чтобы любой root, который данными питает другой root,
+        /// стоял раньше своего потребителя (стабильная DFS-сортировка, циклы пропускаются).
+        /// </summary>
+        private List<NodeData> TopologicallyOrderRoots(List<NodeData> roots)
+        {
+            var rootIds = new HashSet<string>(roots.Select(r => r.Id));
+            var visited = new HashSet<string>();
+            var onStack = new HashSet<string>();
+            var ordered = new List<NodeData>();
+
+            void Visit(string nodeId)
+            {
+                if (visited.Contains(nodeId) || onStack.Contains(nodeId))
+                    return;
+                onStack.Add(nodeId);
+
+                foreach (var depRootId in CollectDataRootDependencies(nodeId, rootIds))
+                {
+                    if (depRootId == nodeId)
+                        continue;
+                    Visit(depRootId);
+                }
+
+                onStack.Remove(nodeId);
+
+                if (visited.Add(nodeId) && _map.TryGetValue(nodeId, out var node))
+                    ordered.Add(node);
+            }
+
+            foreach (var root in roots)
+                Visit(root.Id);
+
+            return ordered;
+        }
+
+        /// <summary>
+        /// Возвращает id всех root-нод, от которых через data-связи (любые не-exec рёбра)
+        /// зависит <paramref name="nodeId"/> — прямо или транзитивно через промежуточные non-root узлы.
+        /// </summary>
+        private IEnumerable<string> CollectDataRootDependencies(string nodeId, HashSet<string> rootIds)
+        {
+            var seen = new HashSet<string>();
+            var queue = new Queue<string>();
+            queue.Enqueue(nodeId);
+
+            while (queue.Count > 0)
+            {
+                var current = queue.Dequeue();
+
+                foreach (var edge in _graph.Edges)
+                {
+                    if (edge.ToNodeId != current)
+                        continue;
+                    if (IsExecInPort(edge.ToPort) || IsExecOutPort(edge.FromPort))
+                        continue;
+
+                    var src = edge.FromNodeId;
+                    if (!seen.Add(src))
+                        continue;
+
+                    if (rootIds.Contains(src))
+                        yield return src;
+                    else
+                        queue.Enqueue(src);
+                }
+            }
+        }
+
         private string GenerateFallback()
         {
             var sb = new StringBuilder();
-            foreach (var node in _graph.Nodes)
+            
+            var variables = _graph.Nodes
+                .Where(n => !string.IsNullOrEmpty(n.VariableName) && IsVariableDeclarationCandidate(n))
+                .OrderBy(n => n.Id).ToList();
+
+            foreach (var node in variables)
             {
-                if (IsLiteral(node.Type) && !string.IsNullOrEmpty(node.VariableName))
+                if (IsPlaceholderVariableRefLiteral(node))
+                    continue;
+
+                string valueExpr;
+                
+                // Если есть ExpressionOverride — используем его
+                if (!string.IsNullOrEmpty(node.ExpressionOverride))
                 {
-                    var valueEdge = _graph.Edges.FirstOrDefault(e => e.ToNodeId == node.Id && e.ToPort == "inputValue");
-                    string rhs = valueEdge != null ? EmitCondExpr(valueEdge.FromNodeId) : LiteralRhs(node);
-                    sb.AppendLine($"{KeywordFor(node.ValueType)} {node.VariableName} = {rhs};");
-                    DeclareInCurrentScope(node.VariableName);
+                    valueExpr = node.ExpressionOverride;
                 }
-                else if ((IsBinaryOp(node.Type) || node.Type == NodeType.UnityVector3) && !string.IsNullOrEmpty(node.VariableName))
+                else if (node.Type == NodeType.UnityVector3 || node.Type == NodeType.Vector3Component)
                 {
-                    var type = InferResultType(node);
-                    sb.AppendLine($"{KeywordFor(type)} {node.VariableName} = {EmitStmtExpr(node.Id)};");
-                    DeclareInCurrentScope(node.VariableName);
+                    valueExpr = EmitExpr(node.Id);
                 }
+                else
+                {
+                    var incomingEdge = _graph.Edges.FirstOrDefault(e => e.ToNodeId == node.Id && e.ToPort == "inputValue");
+
+                    if (incomingEdge != null && _map.TryGetValue(incomingEdge.FromNodeId, out var sourceNode))
+                    {
+                        valueExpr = GetExpressionForNode(sourceNode);
+                    }
+                    else
+                    {
+                        valueExpr = GetDefaultValue(node.ValueType);
+                    }
+                }
+                
+                string type = GetKeywordForType(node.ValueType);
+                sb.AppendLine($"{type} {node.VariableName} = {valueExpr};");
+                DeclareInCurrentScope(node.VariableName);
             }
+
             return sb.ToString().TrimEnd();
+        }
+
+        /// <summary>
+        /// Можно ли эмитить ноду как объявление переменной «тип имя = значение».
+        /// Структурные (ClassNode/MethodOwner), параметры, вызовы, return и flow-ноды
+        /// имеют непустой VariableName (имя класса/метода/параметра), но переменными
+        /// НЕ являются — их нельзя выводить как «int MyClass = 0;».
+        /// </summary>
+        private static bool IsVariableDeclarationCandidate(NodeData n)
+        {
+            switch (n.Type)
+            {
+                case NodeType.ClassNode:
+                case NodeType.MethodOwner:
+                case NodeType.MethodParam:
+                case NodeType.MethodCall:
+                case NodeType.ReturnValue:
+                case NodeType.FlowIf:
+                case NodeType.FlowElse:
+                case NodeType.FlowFor:
+                case NodeType.FlowWhile:
+                case NodeType.ConsoleWriteLine:
+                case NodeType.DebugLog:
+                case NodeType.FieldRef:
+                case NodeType.FieldSet:
+                case NodeType.UnityFieldSet:
+                case NodeType.CodeSnippet:
+                    return false;
+                default:
+                    return true;
+            }
         }
 
         private void EmitChain(string nodeId, StringBuilder sb, int indent)
@@ -126,6 +294,37 @@ namespace VisualScripting.Core.Generators
                     EmitConsoleWriteLine(node, sb, pad);
                     break;
 
+                case NodeType.DebugLog:
+                    EmitDebugLog(node, sb, pad);
+                    break;
+
+                case NodeType.MethodCall:
+                    EmitMethodCallStatement(node, sb, pad);
+                    break;
+
+                case NodeType.MethodParam:
+                    // Объявления параметров — не операторы; пропускаем.
+                    break;
+
+                case NodeType.FieldRef:
+                    // В режиме записи (value-вход подключён) — присваиваем поле.
+                    EmitFieldRefWrite(node, sb, pad);
+                    break;
+
+                case NodeType.FieldSet:
+                    EmitFieldSet(node, sb, pad);
+                    break;
+
+                case NodeType.ClassNode:
+                case NodeType.MethodOwner:
+                    // Структурные ноды — пропускаем.
+                    break;
+
+                case NodeType.ReturnValue:
+                    EmitReturn(node, sb, pad);
+                    // Нет exec-out → цепочка обрывается естественным образом (next == null).
+                    return;
+
                 case NodeType.UnityFieldSet:
                     EmitUnityFieldSet(node, sb, pad);
                     break;
@@ -140,6 +339,14 @@ namespace VisualScripting.Core.Generators
                     }
                     break;
 
+                case NodeType.CodeSnippet:
+                    {
+                        var snippet = node.Value?.Trim() ?? "";
+                        if (!string.IsNullOrEmpty(snippet))
+                            sb.AppendLine($"{pad}{snippet}");
+                    }
+                    break;
+
                 default:
                     EmitValueStatement(node, sb, pad);
                     break;
@@ -151,61 +358,111 @@ namespace VisualScripting.Core.Generators
                 EmitChain(next.ToNodeId, sb, indent);
         }
 
-
         private void EmitValueStatement(NodeData node, StringBuilder sb, string pad)
         {
             var vn = node.VariableName;
             if (string.IsNullOrEmpty(vn))
                 return;
+            if (IsPlaceholderVariableRefLiteral(node))
+                return;
+            if (IsSubGraphVariableRefLiteral(node))
+                return;
+
+            // Если есть ExpressionOverride — используем его
+            if (!string.IsNullOrEmpty(node.ExpressionOverride))
+            {
+                if (IsVisibleInAnyScope(vn))
+                    sb.AppendLine($"{pad}{vn} = {node.ExpressionOverride};");
+                else
+                {
+                    string type = GetKeywordForType(node.ValueType);
+                    sb.AppendLine($"{pad}{type} {vn} = {node.ExpressionOverride};");
+                    DeclareInCurrentScope(vn);
+                }
+                return;
+            }
+
+            // Если есть литерал и нет входящей связи
+            if (IsLiteral(node.Type) && !_graph.Edges.Any(e => e.ToNodeId == node.Id && e.ToPort == "inputValue"))
+            {
+                if (IsVisibleInAnyScope(vn))
+                    sb.AppendLine($"{pad}{vn} = {LiteralRhs(node)};");
+                else
+                {
+                    DeclareInCurrentScope(vn);
+                    sb.AppendLine($"{pad}{KeywordFor(node.ValueType)} {vn} = {LiteralRhs(node)};");
+                }
+                return;
+            }
+
+            var incomingEdge = _graph.Edges.FirstOrDefault(e => e.ToNodeId == node.Id && e.ToPort == "inputValue");
+            
+            if (incomingEdge != null && _map.TryGetValue(incomingEdge.FromNodeId, out var sourceNode))
+            {
+                string valueExpr = GetExpressionForNode(sourceNode);
+                
+                if (IsVisibleInAnyScope(vn))
+                    sb.AppendLine($"{pad}{vn} = {valueExpr};");
+                else
+                {
+                    string type = GetKeywordForType(node.ValueType);
+                    sb.AppendLine($"{pad}{type} {vn} = {valueExpr};");
+                    DeclareInCurrentScope(vn);
+                }
+            }
+            else if (IsLiteral(node.Type))
+            {
+                if (IsVisibleInAnyScope(vn))
+                    sb.AppendLine($"{pad}{vn} = {LiteralRhs(node)};");
+                else
+                {
+                    DeclareInCurrentScope(vn);
+                    sb.AppendLine($"{pad}{KeywordFor(node.ValueType)} {vn} = {LiteralRhs(node)};");
+                }
+            }
+            else if ((IsBinaryOp(node.Type) || node.Type == NodeType.UnityVector3
+                        || node.Type == NodeType.UnityFieldAccess || node.Type == NodeType.UnityMethodCall
+                        || node.Type == NodeType.Vector3Component)
+                     && !string.IsNullOrEmpty(vn))
+            {
+                var expr = EmitStmtExpr(node.Id);
+                if (IsVisibleInAnyScope(vn))
+                    sb.AppendLine($"{pad}{vn} = {expr};");
+                else
+                {
+                    DeclareInCurrentScope(vn);
+                    sb.AppendLine($"{pad}{KeywordFor(InferResultType(node))} {vn} = {expr};");
+                }
+            }
+        }
+
+        private string GetExpressionForNode(NodeData node)
+        {
+            if (node == null)
+                return "???";
+
+            // MethodParam / FieldRef — предобъявленные переменные; используем имя как выражение
+            if (node.Type is NodeType.MethodParam or NodeType.FieldRef)
+                return !string.IsNullOrEmpty(node.VariableName) ? node.VariableName : "???";
+
+            // MethodCall — генерируем вызов (VariableName == MethodName, не переменная-результат)
+            if (node.Type == NodeType.MethodCall)
+                return BuildMethodCallExpr(node.Id);
+
+            if (!string.IsNullOrEmpty(node.VariableName))
+                return node.VariableName;
 
             if (IsLiteral(node.Type))
             {
-                var valueEdge = _graph.Edges.FirstOrDefault(e => e.ToNodeId == node.Id && e.ToPort == "inputValue");
-                string rhs;
-                // Граф-обход имеет приоритет: даёт правильные скобки и Math.* имена.
-                // ExpressionOverride используется только как fallback (тернарник, Sqrt и т.п. без edge).
-                if (valueEdge != null)
-                    rhs = EmitCondExpr(valueEdge.FromNodeId);
-                else if (!string.IsNullOrEmpty(node.ExpressionOverride))
-                    rhs = node.ExpressionOverride;
-                else
-                    rhs = LiteralRhs(node);
-
-                if (IsVisibleInAnyScope(vn))
-                    sb.AppendLine($"{pad}{vn} = {rhs};");
-                else
-                {
-                    DeclareInCurrentScope(vn);
-                    sb.AppendLine($"{pad}{KeywordFor(node.ValueType)} {vn} = {rhs};");
-                }
-                return;
+                if (!string.IsNullOrEmpty(node.ExpressionOverride) &&
+                    !node.ExpressionOverride.StartsWith(SubGraphVariableRefMarker, StringComparison.Ordinal))
+                    return node.ExpressionOverride;
+                return LiteralRhs(node);
             }
 
-            if (IsBinaryOp(node.Type) || node.Type == NodeType.LogicalNot || node.Type == NodeType.UnityVector3
-                || node.Type == NodeType.UnityFieldAccess || node.Type == NodeType.UnityMethodCall)
-            {
-                var expr = EmitStmtExpr(node.Id);
-                if (IsVisibleInAnyScope(vn))
-                    sb.AppendLine($"{pad}{vn} = {expr};");
-                else
-                {
-                    DeclareInCurrentScope(vn);
-                    sb.AppendLine($"{pad}{KeywordFor(InferResultType(node))} {vn} = {expr};");
-                }
-                return;
-            }
-
-            if (IsBuiltinExpressionNode(node.Type))
-            {
-                var expr = EmitStmtExpr(node.Id);
-                if (IsVisibleInAnyScope(vn))
-                    sb.AppendLine($"{pad}{vn} = {expr};");
-                else
-                {
-                    DeclareInCurrentScope(vn);
-                    sb.AppendLine($"{pad}{KeywordFor(InferResultType(node))} {vn} = {expr};");
-                }
-            }
+            // Централизованный путь генерации выражений:
+            // поддерживает math/compare/logical/parse/ToString/Mathf и т.д.
+            return EmitExpr(node.Id);
         }
 
         private void EmitIf(NodeData ifNode, StringBuilder sb, int indent, bool inline = false)
@@ -247,30 +504,30 @@ namespace VisualScripting.Core.Generators
 
             sb.AppendLine($"{pad}}}");
 
-            if (!TryResolveIfFalseSuccessor(ifNode, out var target) || target == null)
+            if (!TryResolveIfFalseSuccessor(ifNode, out var elseNode) || elseNode == null)
                 return;
 
-            if (target.Type == NodeType.FlowIf)
+            if (elseNode.Type == NodeType.FlowIf)
             {
-                _emitted.Add(target.Id);
+                _emitted.Add(elseNode.Id);
                 sb.Append($"{pad}else ");
-                EmitIf(target, sb, indent, inline: true);
+                EmitIf(elseNode, sb, indent, inline: true);
             }
-            else if (target.Type == NodeType.FlowElse)
+            else if (elseNode.Type == NodeType.FlowElse)
             {
-                _emitted.Add(target.Id);
+                _emitted.Add(elseNode.Id);
                 sb.AppendLine($"{pad}else");
                 sb.AppendLine($"{pad}{{");
                 PushScope();
 
-                if (target.BodySubGraph != null && target.BodySubGraph.Nodes.Count > 0)
+                if (elseNode.BodySubGraph != null && elseNode.BodySubGraph.Nodes.Count > 0)
                 {
-                    GenerateStatementsFromSubGraph(target.BodySubGraph, sb, indent + 1);
+                    GenerateStatementsFromSubGraph(elseNode.BodySubGraph, sb, indent + 1);
                 }
                 else
                 {
                     var bodyEdge = _graph.Edges.FirstOrDefault(
-                        e => e.FromNodeId == target.Id && IsExecOutPort(e.FromPort));
+                        e => e.FromNodeId == elseNode.Id && IsExecOutPort(e.FromPort));
                     if (bodyEdge != null)
                         EmitChain(bodyEdge.ToNodeId, sb, indent + 1);
                 }
@@ -401,6 +658,7 @@ namespace VisualScripting.Core.Generators
         private void EmitFor(NodeData forNode, StringBuilder sb, int indent)
         {
             var pad = Pad(indent);
+            PushScope();
             var initStr = EmitForInitClause(forNode);
             var condStr = "";
             if (forNode.ConditionSubGraph != null && forNode.ConditionSubGraph.Nodes.Count > 0)
@@ -413,11 +671,9 @@ namespace VisualScripting.Core.Generators
                     e => e.ToNodeId == forNode.Id && e.ToPort == "condition");
                 condStr = condEdge != null ? EmitCondExpr(condEdge.FromNodeId) : "";
             }
-
             var incStr = EmitForIncrementClause(forNode);
             sb.AppendLine($"{pad}for ({initStr}; {condStr}; {incStr})");
             sb.AppendLine($"{pad}{{");
-            PushScope();
             if (forNode.BodySubGraph != null && forNode.BodySubGraph.Nodes.Count > 0)
             {
                 GenerateStatementsFromSubGraph(forNode.BodySubGraph, sb, indent + 1);
@@ -429,32 +685,23 @@ namespace VisualScripting.Core.Generators
                 if (bodyEdge != null)
                     EmitChain(bodyEdge.ToNodeId, sb, indent + 1);
             }
-            PopScope();
             sb.AppendLine($"{pad}}}");
+            PopScope();
         }
 
-        /// <summary>
-        /// Генерирует одно предложение for-клаузы (init или increment) из sub-графа.
-        /// Результат: "int i = 0" или "i++" — без точки с запятой.
-        /// </summary>
         private string GenerateForClauseFromSubGraph(GraphData subGraph)
         {
             if (subGraph == null || subGraph.Nodes.Count == 0) return "";
             var sb = new StringBuilder();
             GenerateStatementsFromSubGraph(subGraph, sb, 0);
-            // GenerateStatementsFromSubGraph добавляет ";\n" — убираем хвост и лишние пробелы
-            return sb.ToString()
-                .Replace(";\r\n", "").Replace(";\n", "")
-                .Trim();
+            return sb.ToString().Replace(";\r\n", ", ").Replace(";\n", ", ").TrimEnd(',', ' ', '\r', '\n', ';');
         }
 
         private string EmitForInitClause(NodeData forNode)
         {
-            // Новый путь: init хранится в SubGraph
             if (forNode.InitSubGraph != null && forNode.InitSubGraph.Nodes.Count > 0)
                 return GenerateForClauseFromSubGraph(forNode.InitSubGraph);
 
-            // Устаревший путь: init-ребро в главном графе
             var initEdge = _graph.Edges.FirstOrDefault(
                 e => e.ToNodeId == forNode.Id && e.ToPort == "init");
             if (initEdge == null)
@@ -465,105 +712,23 @@ namespace VisualScripting.Core.Generators
                 return "";
 
             if (IsLiteral(n.Type) && !string.IsNullOrEmpty(n.VariableName))
-            {
-                var valueEdge = _graph.Edges.FirstOrDefault(e => e.ToNodeId == n.Id && e.ToPort == "inputValue");
-                string rhs = valueEdge != null ? EmitCondExpr(valueEdge.FromNodeId) : LiteralRhs(n);
-                return $"{KeywordFor(n.ValueType)} {n.VariableName} = {rhs}";
-            }
+                return $"{KeywordFor(n.ValueType)} {n.VariableName} = {LiteralRhs(n)}";
 
             return EmitStmtExpr(fromId);
         }
 
         private string EmitForIncrementClause(NodeData forNode)
         {
-            // Новый путь: increment хранится в SubGraph
             if (forNode.IncrementSubGraph != null && forNode.IncrementSubGraph.Nodes.Count > 0)
-            {
-                // Пробуем распознать паттерн varName++ / varName-- перед генерацией
-                var incDec = TryGetIncrementDecrementClause(forNode.IncrementSubGraph);
-                if (incDec != null) return incDec;
-
                 return GenerateForClauseFromSubGraph(forNode.IncrementSubGraph);
-            }
 
-            // Устаревший путь: increment-ребро в главном графе
             var incEdge = _graph.Edges.FirstOrDefault(
                 e => e.ToNodeId == forNode.Id && e.ToPort == "increment");
             if (incEdge == null)
                 return "";
 
             var fromId = incEdge.FromNodeId;
-            var setEdge = _graph.Edges.FirstOrDefault(
-                e => e.FromNodeId == fromId && e.FromPort == "output" && e.ToPort == "inputValue");
-            if (setEdge != null && _map.TryGetValue(setEdge.ToNodeId, out var setN) &&
-                IsLiteral(setN.Type) && !string.IsNullOrEmpty(setN.VariableName))
-            {
-                var name = setN.VariableName;
-                var a = Input(fromId, "inputA");
-                var b = Input(fromId, "inputB");
-                if (a != null && b != null &&
-                    _map.TryGetValue(b, out var lit) && lit.Type == NodeType.LiteralInt && lit.Value == "1")
-                {
-                    var leftName = EmitExpr(a).Trim();
-                    if (leftName == name)
-                    {
-                        if (_map[fromId].Type == NodeType.MathAdd)
-                            return $"{name}++";
-                        if (_map[fromId].Type == NodeType.MathSubtract)
-                            return $"{name}--";
-                    }
-                }
-
-                return $"{name} = {EmitStmtExpr(fromId)}";
-            }
-
             return EmitStmtExpr(fromId);
-        }
-
-        /// <summary>
-        /// Проверяет, содержит ли subGraph паттерн «varName = varName ± 1»
-        /// и если да — возвращает «varName++» или «varName--».
-        /// Иначе возвращает null, и вызывающий код падает на общую генерацию.
-        /// </summary>
-        private static string? TryGetIncrementDecrementClause(GraphData subGraph)
-        {
-            if (subGraph == null || subGraph.Nodes.Count == 0) return null;
-
-            var subMap = subGraph.Nodes.ToDictionary(n => n.Id);
-
-            // Ищем целевую ноду: литерал с variableName, в inputValue которого приходит MathAdd/Sub
-            foreach (var assignNode in subGraph.Nodes
-                         .Where(n => IsLiteral(n.Type) && !string.IsNullOrEmpty(n.VariableName)))
-            {
-                var varName = assignNode.VariableName;
-
-                var inputEdge = subGraph.Edges
-                    .FirstOrDefault(e => e.ToNodeId == assignNode.Id && e.ToPort == "inputValue");
-                if (inputEdge == null) continue;
-
-                if (!subMap.TryGetValue(inputEdge.FromNodeId, out var mathNode)) continue;
-                if (mathNode.Type != NodeType.MathAdd && mathNode.Type != NodeType.MathSubtract) continue;
-
-                // inputA должен ссылаться на ту же переменную
-                var inputAEdge = subGraph.Edges
-                    .FirstOrDefault(e => e.ToNodeId == mathNode.Id && e.ToPort == "inputA");
-                if (inputAEdge == null) continue;
-                if (!subMap.TryGetValue(inputAEdge.FromNodeId, out var refNode)) continue;
-                if (refNode.VariableName != varName) continue;
-
-                // inputB должен быть LiteralInt == 1
-                var inputBEdge = subGraph.Edges
-                    .FirstOrDefault(e => e.ToNodeId == mathNode.Id && e.ToPort == "inputB");
-                if (inputBEdge == null) continue;
-                if (!subMap.TryGetValue(inputBEdge.FromNodeId, out var litNode)) continue;
-                if (litNode.Type != NodeType.LiteralInt || litNode.Value != "1") continue;
-
-                return mathNode.Type == NodeType.MathAdd
-                    ? $"{varName}++"
-                    : $"{varName}--";
-            }
-
-            return null;
         }
 
         private void EmitWhile(NodeData whileNode, StringBuilder sb, int indent)
@@ -580,7 +745,6 @@ namespace VisualScripting.Core.Generators
                     e => e.ToNodeId == whileNode.Id && e.ToPort == "condition");
                 condStr = condEdge != null ? EmitCondExpr(condEdge.FromNodeId) : "true";
             }
-
             sb.AppendLine($"{pad}while ({condStr})");
             sb.AppendLine($"{pad}{{");
             PushScope();
@@ -599,6 +763,93 @@ namespace VisualScripting.Core.Generators
             sb.AppendLine($"{pad}}}");
         }
 
+        private void EmitMethodCallStatement(NodeData node, StringBuilder sb, string pad)
+        {
+            sb.AppendLine($"{pad}{BuildMethodCallExpr(node.Id)};");
+        }
+
+        private void EmitReturn(NodeData node, StringBuilder sb, string pad)
+        {
+            var valueEdge = _graph.Edges.FirstOrDefault(
+                e => e.ToNodeId == node.Id && e.ToPort == "value");
+            if (valueEdge != null)
+                sb.AppendLine($"{pad}return {EmitExpr(valueEdge.FromNodeId)};");
+            else
+                sb.AppendLine($"{pad}return;");
+        }
+
+        /// <summary>
+        /// Строит выражение вызова пользовательского метода: <c>Name(arg0, arg1, ...)</c>.
+        /// Читает входные порты param0…paramN из текущего графа.
+        /// </summary>
+        private string BuildMethodCallExpr(string nodeId)
+        {
+            if (!_map.TryGetValue(nodeId, out var node)) return "???";
+
+            var methodId   = node.Value;       // MethodId  (GUID)
+            var methodName = node.VariableName; // MethodName (отображаемое имя)
+
+            _methods.TryGetValue(methodId, out var def);
+
+            // Если метод не найден в реестре (например, локальная inline-функция),
+            // определяем количество аргументов по фактическим param*-рёбрам в графе.
+            int paramCount;
+            if (def?.ParamNames != null)
+            {
+                paramCount = def.ParamNames.Count;
+            }
+            else
+            {
+                paramCount = _graph.Edges.Count(e =>
+                    e.ToNodeId == nodeId &&
+                    e.ToPort.StartsWith("param", StringComparison.Ordinal) &&
+                    int.TryParse(e.ToPort.AsSpan("param".Length), out _));
+            }
+
+            var args = new List<string>();
+            for (int i = 0; i < paramCount; i++)
+            {
+                var port   = $"param{i}";
+                var inEdge = _graph.Edges.FirstOrDefault(e => e.ToNodeId == nodeId && e.ToPort == port);
+                if (inEdge != null)
+                {
+                    args.Add(EmitExpr(inEdge.FromNodeId));
+                }
+                else
+                {
+                    var paramType = (def?.ParamTypes != null && i < def.ParamTypes.Count)
+                        ? def.ParamTypes[i] : "int";
+                    args.Add(GetDefaultValue(paramType));
+                }
+            }
+
+            // Для статических методов с классом-владельцем добавляем префикс ClassName.
+            var prefix = (!string.IsNullOrEmpty(def?.ClassName)) ? def.ClassName + "." : "";
+            return $"{prefix}{methodName}({string.Join(", ", args)})";
+        }
+
+        /// <summary>
+        /// Если к FieldRef подключён value-вход — это режим записи: emit <c>field = expr;</c>.
+        /// Если value-вход не подключён — нода используется только для чтения; пропускаем.
+        /// </summary>
+        private void EmitFieldRefWrite(NodeData node, StringBuilder sb, string pad)
+        {
+            var valEdge = _graph.Edges.FirstOrDefault(e => e.ToNodeId == node.Id && e.ToPort == "value");
+            if (valEdge == null) return; // режим чтения — не оператор
+            var expr = EmitExpr(valEdge.FromNodeId);
+            sb.AppendLine($"{pad}{node.VariableName} = {expr};");
+        }
+
+        private void EmitFieldSet(NodeData node, StringBuilder sb, string pad)
+        {
+            var fieldName = node.VariableName;
+            if (string.IsNullOrEmpty(fieldName)) return;
+
+            var valEdge = _graph.Edges.FirstOrDefault(e => e.ToNodeId == node.Id && e.ToPort == "value");
+            var expr    = valEdge != null ? EmitExpr(valEdge.FromNodeId) : GetDefaultValue(node.ValueType);
+            sb.AppendLine($"{pad}{fieldName} = {expr};");
+        }
+
         private void EmitConsoleWriteLine(NodeData node, StringBuilder sb, string pad)
         {
             var msgEdge = _graph.Edges.FirstOrDefault(
@@ -607,6 +858,16 @@ namespace VisualScripting.Core.Generators
                 ? EmitCondExpr(msgEdge.FromNodeId)
                 : FormatConsoleLiteral(node);
             sb.AppendLine($"{pad}Console.WriteLine({msg});");
+        }
+
+        private void EmitDebugLog(NodeData node, StringBuilder sb, string pad)
+        {
+            var msgEdge = _graph.Edges.FirstOrDefault(
+                e => e.ToNodeId == node.Id && e.ToPort == "message");
+            var msg = msgEdge != null
+                ? EmitCondExpr(msgEdge.FromNodeId)
+                : FormatConsoleLiteral(node);
+            sb.AppendLine($"{pad}Debug.Log({msg});");
         }
 
         private static string FormatConsoleLiteral(NodeData node)
@@ -636,11 +897,24 @@ namespace VisualScripting.Core.Generators
 
             var node = _map[nodeId];
 
+            // MethodCall: VariableName == MethodName (не переменная-результат) — строим вызов
+            if (node.Type == NodeType.MethodCall)
+                return BuildMethodCallExpr(nodeId);
+
+            // MethodParam / FieldRef: предобъявленные переменные — просто имя
+            if (node.Type is NodeType.MethodParam or NodeType.FieldRef)
+                return !string.IsNullOrEmpty(node.VariableName) ? node.VariableName : "???";
+
             if (!string.IsNullOrEmpty(node.VariableName) && nodeId != selfId)
                 return node.VariableName;
 
             if (IsLiteral(node.Type))
+            {
+                if (!string.IsNullOrEmpty(node.ExpressionOverride) &&
+                    !node.ExpressionOverride.StartsWith(SubGraphVariableRefMarker, StringComparison.Ordinal))
+                    return node.ExpressionOverride;
                 return LiteralRhs(node);
+            }
 
             if (IsMath(node.Type))
             {
@@ -727,6 +1001,13 @@ namespace VisualScripting.Core.Generators
 
             if (node.Type == NodeType.UnityFieldAccess)
                 return BuildUnityFieldAccessExpr(nodeId);
+
+            if (node.Type == NodeType.Vector3Component)
+            {
+                var vec = Input(nodeId, "vector");
+                var comp = string.IsNullOrEmpty(node.Value) ? "x" : node.Value;
+                return vec != null ? $"{EmitExpr(vec)}.{comp}" : $"0f /*{comp}*/";
+            }
 
             if (node.Type == NodeType.UnityMethodCall)
                 return BuildUnityMethodCallExpr(nodeId);
@@ -874,6 +1155,24 @@ namespace VisualScripting.Core.Generators
             "Vector3" => "Vector3",
             _ => "int"
         };
+        
+        private static string GetKeywordForType(string? vt) => vt switch
+        {
+            "float" => "float",
+            "bool" => "bool",
+            "string" => "string",
+            "Vector3" => "Vector3",
+            _ => "int"
+        };
+
+        private static string GetDefaultValue(string? vt) => vt switch
+        {
+            "float" => "0f",
+            "bool" => "false",
+            "string" => "\"\"",
+            "Vector3" => "new Vector3(0f, 0f, 0f)",
+            _ => "0"
+        };
 
         private static string MathOp(NodeType t) => t switch
         {
@@ -919,14 +1218,31 @@ namespace VisualScripting.Core.Generators
             t is NodeType.IntParse or NodeType.FloatParse or NodeType.ToStringConvert
                 or NodeType.MathfAbs or NodeType.MathfMax or NodeType.MathfMin;
 
-        /// <summary>Узел, с которого начинается цепочка исполнения (первая инструкция или нет входящего execIn).</summary>
-        private static bool IsStatementEntryNode(NodeData n)
+        private bool IsStatementEntryNode(NodeData n)
         {
+            if (n.Type == NodeType.MethodParam) return false;
+
+            // FieldRef — оператор только в режиме записи (value-вход подключён)
+            if (n.Type == NodeType.FieldRef)
+                return _graph.Edges.Any(e => e.ToNodeId == n.Id && e.ToPort == "value");
+
             if (n.Type is NodeType.FlowIf or NodeType.FlowElse or NodeType.FlowFor or NodeType.FlowWhile
-                or NodeType.ConsoleWriteLine)
+                or NodeType.ConsoleWriteLine or NodeType.DebugLog or NodeType.ReturnValue
+                or NodeType.FieldSet or NodeType.CodeSnippet)
                 return true;
 
-            if (IsLiteral(n.Type) && !string.IsNullOrEmpty(n.VariableName))
+            // MethodCall — оператор, если:
+            //   • метод void (нет полезного возврата), ИЛИ
+            //   • выходной порт ни к чему не подключён (результат не используется)
+            if (n.Type == NodeType.MethodCall)
+            {
+                if (_methods.TryGetValue(n.Value, out var def) && def.ReturnType != "void")
+                    return !_graph.Edges.Any(e => e.FromNodeId == n.Id && e.FromPort == "output");
+                return true; // void method or unknown → always a statement
+            }
+
+            if (IsLiteral(n.Type) && !string.IsNullOrEmpty(n.VariableName) &&
+                !IsPlaceholderVariableRefLiteral(n) && !IsSubGraphVariableRefLiteral(n))
                 return true;
 
             if ((IsBinaryOp(n.Type) || n.Type == NodeType.LogicalNot || IsBuiltinExpressionNode(n.Type)
@@ -940,6 +1256,10 @@ namespace VisualScripting.Core.Generators
 
             // UnityFieldAccess — оператор-точка входа только если результат присваивается переменной.
             if (n.Type == NodeType.UnityFieldAccess && !string.IsNullOrEmpty(n.VariableName))
+                return true;
+
+            // Vector3Component — оператор только если результат присваивается переменной.
+            if (n.Type == NodeType.Vector3Component && !string.IsNullOrEmpty(n.VariableName))
                 return true;
 
             // UnityMethodCall — оператор, если результат присваивается переменной,
@@ -956,9 +1276,39 @@ namespace VisualScripting.Core.Generators
             return false;
         }
 
+        private bool IsPlaceholderVariableRefLiteral(NodeData node)
+        {
+            if (!IsLiteral(node.Type) || string.IsNullOrEmpty(node.VariableName))
+                return false;
+            if (!string.IsNullOrEmpty(node.ExpressionOverride))
+                return false;
+            if (!string.IsNullOrEmpty(node.Value))
+                return false;
+
+            // Subgraph variable refs are expression helpers and must not be emitted as statements.
+            var hasInputValue = _graph.Edges.Any(e =>
+                e.ToNodeId == node.Id &&
+                string.Equals(e.ToPort, "inputValue", StringComparison.OrdinalIgnoreCase));
+            return !hasInputValue;
+        }
+
+        private bool IsSubGraphVariableRefLiteral(NodeData node)
+        {
+            if (!IsLiteral(node.Type) || string.IsNullOrEmpty(node.VariableName))
+                return false;
+            if (string.IsNullOrEmpty(node.ExpressionOverride) ||
+                !node.ExpressionOverride.StartsWith(SubGraphVariableRefMarker, StringComparison.Ordinal))
+                return false;
+
+            var hasInputValue = _graph.Edges.Any(e =>
+                e.ToNodeId == node.Id &&
+                string.Equals(e.ToPort, "inputValue", StringComparison.OrdinalIgnoreCase));
+            return !hasInputValue;
+        }
+
         /// <summary>
-        /// else if / else не должны попадать в корни: на них уже есть вход с «ложного» выхода родительского if.
-        /// Иначе при произвольном порядке нод в списке средний if генерируется отдельным корнем и ломает цепочку.
+        /// else if / else не должны быть корнями: на них уже есть вход с false-выхода родительского if.
+        /// Иначе при порядке нод в списке средний if обрабатывается раньше внешнего и ломает цепочку.
         /// </summary>
         private bool IsChainedElseBranchTarget(string nodeId)
         {
@@ -969,16 +1319,20 @@ namespace VisualScripting.Core.Generators
                 IsFalseBranchOutputPort(e.FromPort));
         }
 
+        /// <summary>
+        /// Имя выхода «ложь» в редакторе может совпадать с полем C# (falseBranch) или с именем из [Output].
+        /// </summary>
         private static bool IsFalseBranchOutputPort(string? fromPort)
         {
             if (string.IsNullOrEmpty(fromPort))
                 return false;
-            if (fromPort == "false" || fromPort == "falseBranch")
-                return true;
-            return string.Equals(fromPort, "false", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(fromPort, "falseBranch", StringComparison.OrdinalIgnoreCase);
+            return PortIds.IsFalseBranch(fromPort);
         }
 
+        /// <summary>
+        /// Ветка false на основном графе разрешается только по явному false-порту.
+        /// Это предотвращает склейку обычных exec-связей в else-if цепочки.
+        /// </summary>
         private bool TryResolveIfFalseSuccessor(NodeData ifNode, out NodeData? successor)
         {
             successor = null;
@@ -989,42 +1343,38 @@ namespace VisualScripting.Core.Generators
                 _map.TryGetValue(e.ToNodeId, out var targetNode) &&
                 (targetNode.Type == NodeType.FlowIf || targetNode.Type == NodeType.FlowElse));
 
-            if (explicitFalse != null)
+            if (explicitFalse == null)
             {
-                successor = _map[explicitFalse.ToNodeId];
+                // Compatibility fallback: some persisted editor graphs can lose falseBranch
+                // and keep only execOut for If -> (If|Else). Treat it as a false branch only
+                // when target is a flow branch node.
+                var legacyExecOut = _graph.Edges.FirstOrDefault(e =>
+                    e.FromNodeId == ifId &&
+                    IsExecOutPort(e.FromPort) &&
+                    _map.TryGetValue(e.ToNodeId, out var targetNode) &&
+                    (targetNode.Type == NodeType.FlowIf || targetNode.Type == NodeType.FlowElse));
+
+                if (legacyExecOut == null)
+                    return false;
+
+                successor = _map[legacyExecOut.ToNodeId];
                 return true;
             }
 
-            // Совместимость с устаревшим форматом: некоторые старые графы хранили
-            // if→if/else через execOut вместо falseBranch.
-            var legacyExec = _graph.Edges.FirstOrDefault(e =>
-                e.FromNodeId == ifId &&
-                IsExecOutPort(e.FromPort) &&
-                _map.TryGetValue(e.ToNodeId, out var leg) &&
-                (leg.Type == NodeType.FlowIf || leg.Type == NodeType.FlowElse));
-
-            if (legacyExec == null)
-                return false;
-
-            successor = _map[legacyExec.ToNodeId];
+            successor = _map[explicitFalse.ToNodeId];
             return true;
         }
 
         private static bool IsExecInPort(string? toPort)
         {
             if (string.IsNullOrEmpty(toPort)) return false;
-            var t = toPort.Trim();
-            return t == "execIn"
-                || t == "exec"
-                || string.Equals(t, "execIn", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(t, "exec", StringComparison.OrdinalIgnoreCase);
+            return PortIds.IsExecIn(toPort);
         }
 
         private static bool IsExecOutPort(string? fromPort)
         {
             if (string.IsNullOrEmpty(fromPort)) return false;
-            var t = fromPort.Trim();
-            return t == "execOut" || string.Equals(t, "execOut", StringComparison.OrdinalIgnoreCase);
+            return PortIds.IsExecOut(fromPort);
         }
     }
 }

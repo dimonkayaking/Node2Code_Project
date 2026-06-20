@@ -8,14 +8,19 @@ namespace CustomVisualScripting.Editor.Classes
     /// <summary>Всплывающее окно добавления / редактирования поля класса.</summary>
     public class FieldEditPopup : EditorWindow
     {
-        private static readonly string[] Types = { "int", "float", "bool", "string", "Vector3", "Transform", "GameObject" };
+        private static readonly string[] Types =
+        {
+            "int", "float", "bool", "string",
+            "Vector3", "Vector2", "Quaternion",
+            "Transform", "GameObject", "Collider2D"
+        };
 
         /// <summary>
         /// Ссылочные Unity-типы, для которых поле не может иметь текстовый литерал
-        /// в качестве начального значения (Transform/GameObject — это ссылки на
+        /// в качестве начального значения (Transform/GameObject/Collider2D — это ссылки на
         /// компоненты сцены, а не конструируемые значения).
         /// </summary>
-        private static readonly HashSet<string> ReferenceTypes = new() { "Transform", "GameObject" };
+        private static readonly HashSet<string> ReferenceTypes = new() { "Transform", "GameObject", "Collider2D" };
 
         private string _name         = "myField";
         private int    _typeIdx;

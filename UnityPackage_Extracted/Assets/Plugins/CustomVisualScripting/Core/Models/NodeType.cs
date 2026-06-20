@@ -48,6 +48,12 @@ namespace VisualScripting.Core.Models
         UnityFieldAccess,
         UnityFieldSet,
 
+        // Разбивка Vector3 на компоненты (.x / .y / .z)
+        Vector3Component,
+
+        // Заглушка — произвольный код вставляется в генерацию as-is (неизвестный код при парсинге)
+        CodeSnippet,
+
         // Конвертация
         IntParse,
         FloatParse,

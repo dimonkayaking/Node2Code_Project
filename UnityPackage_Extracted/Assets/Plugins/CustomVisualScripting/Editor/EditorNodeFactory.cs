@@ -10,6 +10,7 @@ using CustomVisualScripting.Editor.Nodes.Logic;
 using CustomVisualScripting.Editor.Nodes.Math;
 using CustomVisualScripting.Editor.Nodes.Methods;
 using CustomVisualScripting.Editor.Nodes.Unity;
+using CustomVisualScripting.Editor.Nodes.Snippets;
 using VisualScripting.Core.Models;
 
 namespace CustomVisualScripting.Editor
@@ -88,8 +89,10 @@ namespace CustomVisualScripting.Editor
                 case NodeType.ReturnValue:  return new ReturnNode();
                 case NodeType.ClassNode:    return new ClassNode();
                 case NodeType.MethodOwner:  return new MethodOwnerNode();
-                case NodeType.FieldRef:     return new FieldRefNode();
-                case NodeType.FieldSet:     return new FieldSetNode();
+                case NodeType.FieldRef:          return new FieldRefNode();
+                case NodeType.FieldSet:          return new FieldSetNode();
+                case NodeType.Vector3Component:  return new Vector3ComponentNode();
+                case NodeType.CodeSnippet:       return new CodeSnippetNode();
                 default: return null;
             }
         }

@@ -207,7 +207,7 @@ namespace VisualScripting.Core.Generators
                 {
                     valueExpr = node.ExpressionOverride;
                 }
-                else if (node.Type == NodeType.UnityVector3)
+                else if (node.Type == NodeType.UnityVector3 || node.Type == NodeType.Vector3Component)
                 {
                     valueExpr = EmitExpr(node.Id);
                 }
@@ -257,6 +257,7 @@ namespace VisualScripting.Core.Generators
                 case NodeType.FieldRef:
                 case NodeType.FieldSet:
                 case NodeType.UnityFieldSet:
+                case NodeType.CodeSnippet:
                     return false;
                 default:
                     return true;
@@ -338,6 +339,14 @@ namespace VisualScripting.Core.Generators
                     }
                     break;
 
+                case NodeType.CodeSnippet:
+                    {
+                        var snippet = node.Value?.Trim() ?? "";
+                        if (!string.IsNullOrEmpty(snippet))
+                            sb.AppendLine($"{pad}{snippet}");
+                    }
+                    break;
+
                 default:
                     EmitValueStatement(node, sb, pad);
                     break;
@@ -412,7 +421,8 @@ namespace VisualScripting.Core.Generators
                 }
             }
             else if ((IsBinaryOp(node.Type) || node.Type == NodeType.UnityVector3
-                        || node.Type == NodeType.UnityFieldAccess || node.Type == NodeType.UnityMethodCall)
+                        || node.Type == NodeType.UnityFieldAccess || node.Type == NodeType.UnityMethodCall
+                        || node.Type == NodeType.Vector3Component)
                      && !string.IsNullOrEmpty(vn))
             {
                 var expr = EmitStmtExpr(node.Id);
@@ -992,6 +1002,13 @@ namespace VisualScripting.Core.Generators
             if (node.Type == NodeType.UnityFieldAccess)
                 return BuildUnityFieldAccessExpr(nodeId);
 
+            if (node.Type == NodeType.Vector3Component)
+            {
+                var vec = Input(nodeId, "vector");
+                var comp = string.IsNullOrEmpty(node.Value) ? "x" : node.Value;
+                return vec != null ? $"{EmitExpr(vec)}.{comp}" : $"0f /*{comp}*/";
+            }
+
             if (node.Type == NodeType.UnityMethodCall)
                 return BuildUnityMethodCallExpr(nodeId);
 
@@ -1211,7 +1228,7 @@ namespace VisualScripting.Core.Generators
 
             if (n.Type is NodeType.FlowIf or NodeType.FlowElse or NodeType.FlowFor or NodeType.FlowWhile
                 or NodeType.ConsoleWriteLine or NodeType.DebugLog or NodeType.ReturnValue
-                or NodeType.FieldSet)
+                or NodeType.FieldSet or NodeType.CodeSnippet)
                 return true;
 
             // MethodCall — оператор, если:
@@ -1239,6 +1256,10 @@ namespace VisualScripting.Core.Generators
 
             // UnityFieldAccess — оператор-точка входа только если результат присваивается переменной.
             if (n.Type == NodeType.UnityFieldAccess && !string.IsNullOrEmpty(n.VariableName))
+                return true;
+
+            // Vector3Component — оператор только если результат присваивается переменной.
+            if (n.Type == NodeType.Vector3Component && !string.IsNullOrEmpty(n.VariableName))
                 return true;
 
             // UnityMethodCall — оператор, если результат присваивается переменной,

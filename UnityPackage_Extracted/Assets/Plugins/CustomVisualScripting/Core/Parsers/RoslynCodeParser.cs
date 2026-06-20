@@ -730,8 +730,8 @@ namespace VisualScripting.Core.Parsers
                     return null;
 
                 default:
-                    ReportUnsupported(stmt);
-                    return null;
+                    // Неизвестная конструкция — создаём CodeSnippet с исходным текстом
+                    return CreateCodeSnippetNode(stmt.ToString().Trim(), prevNode, prevPort);
             }
         }
 
@@ -871,6 +871,21 @@ namespace VisualScripting.Core.Parsers
         {
             _errors.Add(
                 $"Неподдерживаемая конструкция ({FormatUserLocation(node.SyntaxTree, node.Span)}): {node.Kind()}. Поддерживаются: объявления, присваивания, +=/-=, ++/--, if/else, for/while, вызовы Parse/ToString/Mathf, Console.WriteLine.");
+        }
+
+        /// <summary>Создаёт CodeSnippet-ноду с произвольным кодом и включает её в exec-цепочку.</summary>
+        private FlowHost CreateCodeSnippetNode(string code, string prevNode, string prevPort)
+        {
+            var id = NewId();
+            _graph.Nodes.Add(new NodeData
+            {
+                Id    = id,
+                Type  = NodeType.CodeSnippet,
+                Value = code
+            });
+            if (prevNode != null)
+                AddEdge(prevNode, prevPort, id, PortIds.ExecIn);
+            return new FlowHost { NodeId = id, ExecOutPort = PortIds.ExecOut };
         }
 
         /// <summary>
@@ -1023,7 +1038,8 @@ namespace VisualScripting.Core.Parsers
                 var rootNode = _graph.Nodes.FirstOrDefault(n => n.Id == rootId);
                 string litId;
                 if (rootNode != null && (IsLiteralNodeType(rootNode.Type) || rootNode.Type == NodeType.UnityVector3
-                    || rootNode.Type == NodeType.UnityMethodCall || rootNode.Type == NodeType.UnityFieldAccess))
+                    || rootNode.Type == NodeType.UnityMethodCall || rootNode.Type == NodeType.UnityFieldAccess
+                    || rootNode.Type == NodeType.Vector3Component))
                 {
                     // Узел уже представляет вычисленное значение (вызов Unity-метода/доступ
                     // к полю) — не оборачиваем его в литерал-пустышку, а просто помечаем
@@ -1148,7 +1164,8 @@ namespace VisualScripting.Core.Parsers
                     var rootNode = _graph.Nodes.FirstOrDefault(n => n.Id == rootId);
                     string litId;
                     if (rootNode != null && (IsLiteralNodeType(rootNode.Type) || rootNode.Type == NodeType.UnityVector3
-                        || rootNode.Type == NodeType.UnityMethodCall || rootNode.Type == NodeType.UnityFieldAccess) && string.IsNullOrEmpty(rootNode.VariableName))
+                        || rootNode.Type == NodeType.UnityMethodCall || rootNode.Type == NodeType.UnityFieldAccess
+                        || rootNode.Type == NodeType.Vector3Component) && string.IsNullOrEmpty(rootNode.VariableName))
                     {
                         rootNode.VariableName = name;
                         if (_variableTypes.TryGetValue(name, out var existingType))
@@ -1247,8 +1264,8 @@ namespace VisualScripting.Core.Parsers
                     prevPort);
             }
 
-            ReportUnsupported(stmt);
-            return null;
+            // Неизвестная конструкция — создаём CodeSnippet с исходным текстом
+            return CreateCodeSnippetNode(stmt.ToString().Trim(), prevNode, prevPort);
         }
 
         private static bool IsConsoleWriteLine(InvocationExpressionSyntax inv)
@@ -2100,6 +2117,11 @@ namespace VisualScripting.Core.Parsers
                     IsMathfStaticReceiver(mathMem.Expression) || IsSystemMathStaticReceiver(mathMem.Expression):
                     return CreatePassthroughMathLiteral(mathMem.ToString(), isRoot, assignVariableToRoot);
 
+                // Доступ к компоненту вектора: expr.x / expr.y / expr.z
+                case MemberAccessExpressionSyntax vecComp when
+                    vecComp.Name.Identifier.Text is "x" or "y" or "z":
+                    return CreateVector3ComponentNode(vecComp, isRoot, assignVariableToRoot, out unsupported);
+
                 case MemberAccessExpressionSyntax faMem when TryResolveUnityFieldAccess(faMem, out var faClass, out var faOwner, out var faMember):
                     return CreateUnityFieldAccessNode(faClass, faOwner, faMember, isRoot, assignVariableToRoot);
 
@@ -2369,6 +2391,27 @@ namespace VisualScripting.Core.Parsers
         }
 
         /// <summary>Создаёт ноду UnityFieldAccess (чтение поля/свойства Unity API).</summary>
+        /// <summary>Создаёт ноду Vector3Component (доступ к .x/.y/.z).</summary>
+        private string CreateVector3ComponentNode(MemberAccessExpressionSyntax ma, bool isRoot, string assignVariableToRoot, out bool unsupported)
+        {
+            unsupported = false;
+            var component = ma.Name.Identifier.Text; // "x", "y" или "z"
+            var vecId = VisitExpression(ma.Expression, false, null, out unsupported);
+            if (unsupported || vecId == null) return null;
+            var id = NewId();
+            var vn = isRoot && !string.IsNullOrEmpty(assignVariableToRoot) ? assignVariableToRoot : "";
+            _graph.Nodes.Add(new NodeData
+            {
+                Id        = id,
+                Type      = NodeType.Vector3Component,
+                Value     = component,
+                ValueType = "float",
+                VariableName = vn
+            });
+            AddEdge(vecId, GetDataOutPortForNodeId(vecId), id, "vector");
+            return id;
+        }
+
         private string CreateUnityFieldAccessNode(string className, string ownerExpr, UnityMemberInfo member, bool isRoot, string assignVariableToRoot)
         {
             var id = NewId();

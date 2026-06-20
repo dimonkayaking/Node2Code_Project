@@ -466,23 +466,30 @@ namespace CustomVisualScripting.Editor.Windows
 
         // ─── Авто-using при сохранении ────────────────────────────────────────
 
+        /// <summary>
+        /// Namespace-ы, которые добавляются по паттерну использования в коде.
+        /// UnityEngine здесь отсутствует — он добавляется безусловно (см. AlwaysRequiredUsings).
+        /// </summary>
         private static readonly (System.Text.RegularExpressions.Regex pattern, string ns)[] UsingRules =
         {
             (new System.Text.RegularExpressions.Regex(@"\bConsole\.", System.Text.RegularExpressions.RegexOptions.Compiled),
              "System"),
             (new System.Text.RegularExpressions.Regex(@"\bMath\.", System.Text.RegularExpressions.RegexOptions.Compiled),
              "System"),
-            (new System.Text.RegularExpressions.Regex(@"\bDebug\.Log", System.Text.RegularExpressions.RegexOptions.Compiled),
-             "UnityEngine"),
             (new System.Text.RegularExpressions.Regex(@"\b(List|Dictionary|HashSet|Queue|Stack)<", System.Text.RegularExpressions.RegexOptions.Compiled),
              "System.Collections.Generic"),
             (new System.Text.RegularExpressions.Regex(@"\.(Select|Where|FirstOrDefault|OrderBy|Any|All)\(", System.Text.RegularExpressions.RegexOptions.Compiled),
              "System.Linq"),
         };
 
+        /// <summary>Namespaces, которые обязательно присутствуют в каждом сохраняемом файле.</summary>
+        private static readonly string[] AlwaysRequiredUsings = { "UnityEngine" };
+
         /// <summary>
-        /// Добавляет отсутствующие using-директивы в начало кода на основе
-        /// обнаруженных паттернов использования.
+        /// Добавляет отсутствующие using-директивы в начало кода:
+        /// — UnityEngine добавляется всегда;
+        /// — остальные — по паттернам использования (System, System.Collections.Generic и т.п.).
+        /// Дублей не создаёт.
         /// </summary>
         private static string EnsureRequiredUsings(string code)
         {
@@ -496,15 +503,17 @@ namespace CustomVisualScripting.Editor.Windows
                     System.Text.RegularExpressions.RegexOptions.Multiline))
                 present.Add(m.Groups[1].Value);
 
-            // Определяем, какие using нужно добавить.
-            // HashSet гарантирует отсутствие дублей, если несколько правил дают один namespace
-            // (например Console. и Math. оба требуют "System").
+            // HashSet гарантирует отсутствие дублей
             var toAdd = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
+
+            // 1. Безусловно-обязательные
+            foreach (var ns in AlwaysRequiredUsings)
+                if (!present.Contains(ns)) toAdd.Add(ns);
+
+            // 2. По паттернам использования
             foreach (var (pattern, ns) in UsingRules)
-            {
                 if (!present.Contains(ns) && pattern.IsMatch(code))
                     toAdd.Add(ns);
-            }
 
             if (toAdd.Count == 0) return code;
 
@@ -521,6 +530,8 @@ namespace CustomVisualScripting.Editor.Windows
             try
             {
                 File.WriteAllText(path, code);
+                EnsureMetaFile(path);
+                AssetDatabase.Refresh();
                 _toolbar.SetStatusSuccess($"Сохранено: {Path.GetFileName(path)}");
                 _hasUnsavedChanges = false;
             }
@@ -528,6 +539,42 @@ namespace CustomVisualScripting.Editor.Windows
             {
                 _toolbar.SetStatusError($"Ошибка сохранения: {e.Message}");
             }
+        }
+
+        /// <summary>
+        /// Создаёт .meta файл рядом с .cs, если его ещё нет.
+        /// Unity требует meta для каждого файла внутри Assets/.
+        /// </summary>
+        private static void EnsureMetaFile(string csPath)
+        {
+            var metaPath = csPath + ".meta";
+            if (File.Exists(metaPath)) return;
+
+            // Генерируем детерминированный GUID на основе пути файла,
+            // чтобы повторные сохранения давали тот же GUID (без потери ссылок).
+            var guid = GenerateStableGuid(csPath);
+
+            var meta =
+                $"fileFormatVersion: 2\n" +
+                $"guid: {guid}\n" +
+                $"MonoImporter:\n" +
+                $"  externalObjects: {{}}\n" +
+                $"  serializedVersion: 2\n" +
+                $"  defaultReferences: []\n" +
+                $"  executionOrder: 0\n" +
+                $"  icon: {{instanceID: 0}}\n" +
+                $"  userData: \n" +
+                $"  labels: []\n";
+
+            File.WriteAllText(metaPath, meta);
+        }
+
+        /// <summary>Генерирует стабильный 32-символьный hex-GUID из пути файла.</summary>
+        private static string GenerateStableGuid(string path)
+        {
+            using var md5 = System.Security.Cryptography.MD5.Create();
+            var bytes = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(path.Replace('\\', '/')));
+            return BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant();
         }
         
         private void OnLoad()
