@@ -74,6 +74,7 @@ namespace VisualScripting.Core.Models
         MethodOwner,
 
         // Поля класса
+        VariableRef, // Ссылка на переменную/поле из outer scope (пасстру)
         FieldRef,   // чтение статического поля — output-порт
         FieldSet    // запись статического поля — exec-нода + value-вход
     }

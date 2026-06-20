@@ -228,14 +228,21 @@ namespace CustomVisualScripting.Editor.Nodes.Views
 
         // ─── Контент: expression-подпространство (только чистые выражения) ───
 
-        private static readonly HashSet<string> ExprCategories = new(StringComparer.Ordinal)
-            { "Literals", "Math", "Comparison", "Logic", "Conversion" };
-
         private void ShowExprContent()
         {
+            // Единственный источник правды — IsCategoryAllowed в graphView (SubspaceExprGraphView.ShouldHideMenuPath).
+            // Никаких хардкодированных списков здесь нет: добавление категории в ShouldHideMenuPath
+            // автоматически делает её доступной и здесь.
+            var filtered = _graphView as FilteredCreateMenuBaseGraphView;
+
+            // Unity — специальная кнопка с подкатегориями (как в ShowExecutionContent)
+            if (filtered == null || filtered.IsCategoryAllowed("Unity"))
+                _contentContainer.Add(CreateUnityCategoryButton());
+
+            // Стандартные категории: Literals/Math/Comparison/Logic/Conversion и любые новые
             foreach (var cat in _categories)
             {
-                if (ExprCategories.Contains(cat.Key))
+                if (filtered == null || filtered.IsCategoryAllowed(cat.Key))
                     _contentContainer.Add(CreateCategoryButton(cat.Key));
             }
         }
@@ -1086,6 +1093,12 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             vec3Btn.style.marginBottom    = 2;
             _contentContainer.Add(vec3Btn);
 
+            var gameObjBtn = new Button(CreateGameObjectNodeOnGraph) { text = "this.gameObject" };
+            gameObjBtn.style.unityTextAlign = TextAnchor.MiddleLeft;
+            gameObjBtn.style.paddingLeft    = 8;
+            gameObjBtn.style.marginBottom   = 2;
+            _contentContainer.Add(gameObjBtn);
+
             var snippetBtn = new Button(CreateCodeSnippetNodeOnGraph) { text = "Code Snippet" };
             snippetBtn.style.unityTextAlign = TextAnchor.MiddleLeft;
             snippetBtn.style.paddingLeft    = 8;
@@ -1218,7 +1231,9 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             row.style.paddingLeft   = 10;
 
             var btn = new Button(() => CreateUnityMethodCallNodeOnGraph(cls, method));
-            btn.text                  = method.Name;
+            btn.text = method.Parameters.Count > 0
+                ? $"{method.Name} ({string.Join(", ", method.Parameters.Select(p => p.Name))})"
+                : method.Name;
             btn.tooltip               = method.Signature;
             btn.style.flexGrow        = 1;
             btn.style.fontSize        = 12;
@@ -1308,6 +1323,25 @@ namespace CustomVisualScripting.Editor.Nodes.Views
                 return;
             }
             var node = new Vector3ComponentNode { Component = "x" };
+            PlaceAndAddNode(node);
+        }
+
+        private void CreateGameObjectNodeOnGraph()
+        {
+            if (_graphView == null || _graphView.graph == null)
+            {
+                UnityEngine.Debug.LogError("[NodeToolbarView] Graph is not initialized.");
+                return;
+            }
+            var node = new UnityFieldAccessNode();
+            node.InitializeFromData(new NodeData
+            {
+                Type            = NodeType.UnityFieldAccess,
+                Value           = "",
+                MemberName      = "gameObject",
+                OwnerExpression = "",
+                ValueType       = "GameObject"
+            });
             PlaceAndAddNode(node);
         }
 
@@ -1588,7 +1622,7 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             btn.RegisterCallback<MouseEnterEvent>(_ =>
                 btn.style.backgroundColor = new Color(0.35f, 0.35f, 0.35f));
             btn.RegisterCallback<MouseLeaveEvent>(_ =>
-                btn.style.backgroundColor = new Color(0.25f, 0.25f, 0.25f));
+                btn.style.backgroundColor = new Color(0.22f, 0.22f, 0.22f));
         }
 
         private static void StyleBackButton(Button btn)

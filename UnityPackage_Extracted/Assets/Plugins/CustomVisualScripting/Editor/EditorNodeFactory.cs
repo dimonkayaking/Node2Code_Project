@@ -93,6 +93,7 @@ namespace CustomVisualScripting.Editor
                 case NodeType.FieldSet:          return new FieldSetNode();
                 case NodeType.Vector3Component:  return new Vector3ComponentNode();
                 case NodeType.CodeSnippet:       return new CodeSnippetNode();
+                case NodeType.VariableRef:       return new VariableRefNode();
                 default: return null;
             }
         }

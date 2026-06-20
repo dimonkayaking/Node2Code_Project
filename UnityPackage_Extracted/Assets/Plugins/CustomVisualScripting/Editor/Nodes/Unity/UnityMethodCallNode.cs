@@ -44,7 +44,9 @@ namespace CustomVisualScripting.Editor.Nodes.Unity
 
         public override string name =>
             string.IsNullOrEmpty(MemberName) ? "Unity Method Call" :
-            $"{(string.IsNullOrEmpty(OwnerExpr) ? ClassName : OwnerExpr)}.{MemberName}";
+            OwnerExpr == "@bare"             ? MemberName :
+            string.IsNullOrEmpty(OwnerExpr)  ? $"{ClassName}.{MemberName}" :
+                                               $"{OwnerExpr}.{MemberName}";
 
         protected override void Process() { }
 

@@ -445,5 +445,24 @@ namespace VisualScripting.Core.Models
         /// <summary>Найти поле/свойство по имени класса и имени члена.</summary>
         public static UnityMemberInfo? FindField(string className, string fieldName) =>
             GetClass(className)?.Fields.Find(f => f.Name == fieldName);
+
+        /// <summary>
+        /// Поиск метода по имени во всех классах реестра (для top-level вызовов без receiver: Destroy, Instantiate и т.п.).
+        /// Сначала по точному совпадению (argCount), затем по имени.
+        /// </summary>
+        public static (UnityClassInfo cls, UnityMemberInfo member)? FindMethodGlobal(string methodName, int argCount)
+        {
+            foreach (var cls in Classes)
+            {
+                var m = cls.Methods.Find(x => x.Name == methodName && x.Parameters.Count == argCount);
+                if (m != null) return (cls, m);
+            }
+            foreach (var cls in Classes)
+            {
+                var m = cls.Methods.Find(x => x.Name == methodName);
+                if (m != null) return (cls, m);
+            }
+            return null;
+        }
     }
 }

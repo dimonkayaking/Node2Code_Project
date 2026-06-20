@@ -332,7 +332,8 @@ namespace VisualScripting.Core.Generators
                 case NodeType.UnityMethodCall:
                     {
                         var member = UnityLibraryRegistry.FindMethod(node.Value, node.MemberName);
-                        if (member != null && member.ReturnType == "void" && string.IsNullOrEmpty(node.VariableName))
+                        // void-return OR discard (no VariableName) -> emit as statement
+                        if (member != null && string.IsNullOrEmpty(node.VariableName))
                             sb.AppendLine($"{pad}{BuildUnityMethodCallExpr(node.Id)};");
                         else
                             EmitValueStatement(node, sb, pad);
@@ -553,6 +554,7 @@ namespace VisualScripting.Core.Generators
         {
             if (!map.TryGetValue(nodeId, out var node)) return "???";
             if (!string.IsNullOrEmpty(node.VariableName)) return node.VariableName;
+            if (node.Type == NodeType.VariableRef) return !string.IsNullOrEmpty(node.ExpressionOverride) ? node.ExpressionOverride : "???";
             if (IsLiteral(node.Type)) return LiteralRhs(node);
 
             string? SubIn(string port) =>
@@ -624,6 +626,21 @@ namespace VisualScripting.Core.Generators
                 if (a == null || b == null) return "???";
                 var fn = node.Type == NodeType.MathfMax ? "Max" : "Min";
                 return $"Math.{fn}({EmitSubExpr(a, map, graph, false)}, {EmitSubExpr(b, map, graph, false)})";
+            }
+
+            // Vector3 компонент (.x/.y/.z) в подграфе условия
+            if (node.Type == NodeType.Vector3Component)
+            {
+                var vec = SubIn("vector");
+                var comp = string.IsNullOrEmpty(node.Value) ? "x" : node.Value;
+                return vec != null ? $"{EmitSubExpr(vec, map, graph, false)}.{comp}" : $"0f /*{comp}*/";
+            }
+
+            // Доступ к полю/свойству Unity (transform.position, gameObject и т.п.)
+            if (node.Type == NodeType.UnityFieldAccess)
+            {
+                var prefix = ResolveOwnerPrefix(node);
+                return string.IsNullOrEmpty(prefix) ? node.MemberName : $"{prefix}.{node.MemberName}";
             }
 
             return "???";
@@ -905,6 +922,10 @@ namespace VisualScripting.Core.Generators
             if (node.Type is NodeType.MethodParam or NodeType.FieldRef)
                 return !string.IsNullOrEmpty(node.VariableName) ? node.VariableName : "???";
 
+            // VariableRef: ссылка на внешнюю переменную/поле — ExpressionOverride как есть
+            if (node.Type == NodeType.VariableRef)
+                return !string.IsNullOrEmpty(node.ExpressionOverride) ? node.ExpressionOverride : "???";
+
             if (!string.IsNullOrEmpty(node.VariableName) && nodeId != selfId)
                 return node.VariableName;
 
@@ -1017,6 +1038,7 @@ namespace VisualScripting.Core.Generators
 
         /// <summary>Префикс получателя для члена Unity API: OwnerExpression (экземпляр) либо Value (класс — статический член).</summary>
         private static string ResolveOwnerPrefix(NodeData node) =>
+            node.OwnerExpression == "@bare" ? "" :
             !string.IsNullOrEmpty(node.OwnerExpression) ? node.OwnerExpression : node.Value;
 
         /// <summary>Строит список аргументов вызова метода Unity API из портов param0..param3.</summary>
@@ -1045,7 +1067,9 @@ namespace VisualScripting.Core.Generators
                 return "???";
             var prefix = ResolveOwnerPrefix(node);
             var args = BuildUnityCallArgs(nodeId, member);
-            return $"{prefix}.{node.MemberName}({args})";
+            return string.IsNullOrEmpty(prefix)
+                ? $"{node.MemberName}({args})"
+                : $"{prefix}.{node.MemberName}({args})";
         }
 
         /// <summary>Строит выражение доступа к полю/свойству Unity API (UnityFieldAccess).</summary>
@@ -1053,7 +1077,7 @@ namespace VisualScripting.Core.Generators
         {
             var node = _map[nodeId];
             var prefix = ResolveOwnerPrefix(node);
-            return $"{prefix}.{node.MemberName}";
+            return string.IsNullOrEmpty(prefix) ? node.MemberName : $"{prefix}.{node.MemberName}";
         }
 
         /// <summary>Генерирует инструкцию записи в поле/свойство Unity API (UnityFieldSet).</summary>

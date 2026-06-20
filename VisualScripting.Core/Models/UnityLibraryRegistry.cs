@@ -362,4 +362,107 @@ namespace VisualScripting.Core.Models
                 }
             },
 
-            // 
+            // ───────────────────────── Time (Время) ────────────────────────────────
+            new UnityClassInfo
+            {
+                ClassName = "Time",
+                DisplayName = "Time",
+                Category = "Время",
+                Fields =
+                {
+                    new UnityMemberInfo { Name = "deltaTime", Kind = UnityMemberKind.Property, ReturnType = "float", IsStatic = true, Signature = "Time.deltaTime", Mvp = true }
+                }
+            },
+
+            // ───────────────────────── Random (Случайные числа) ────────────────────
+            new UnityClassInfo
+            {
+                ClassName = "Random",
+                DisplayName = "Random",
+                Category = "Случайные числа",
+                Methods =
+                {
+                    new UnityMemberInfo
+                    {
+                        Name = "Range", Kind = UnityMemberKind.Method, ReturnType = "float", IsStatic = true,
+                        Parameters =
+                        {
+                            new UnityParamInfo { Name = "min", Type = "float" },
+                            new UnityParamInfo { Name = "max", Type = "float" }
+                        },
+                        Signature = "Random.Range(float min, float max)",
+                        Notes = "Также есть int-перегрузка Random.Range(int min, int max) — выбирается по типу аргументов.",
+                        Mvp = true
+                    }
+                }
+            },
+
+            // ───────────────────────── Debug (Отладка) ─────────────────────────────
+            new UnityClassInfo
+            {
+                ClassName = "Debug",
+                DisplayName = "Debug",
+                Category = "Отладка",
+                Methods =
+                {
+                    new UnityMemberInfo
+                    {
+                        Name = "Log", Kind = UnityMemberKind.Method, ReturnType = "void", IsStatic = true,
+                        Parameters = { new UnityParamInfo { Name = "message", Type = "object" } },
+                        Signature = "Debug.Log(object message)",
+                        Notes = "Уже реализовано нодой DebugLogNode — переносится из главного меню в категорию Unity.",
+                        Mvp = true
+                    }
+                }
+            }
+        };
+
+        /// <summary>Найти описание класса по имени C# (Mathf, Vector3, GameObject, ...).</summary>
+        public static UnityClassInfo? GetClass(string className) =>
+            Classes.Find(c => c.ClassName == className);
+
+        /// <summary>Все классы в указанной UI-категории (Математика, Векторы, ...).</summary>
+        public static List<UnityClassInfo> GetByCategory(string category) =>
+            Classes.FindAll(c => c.Category == category);
+
+        /// <summary>Найти метод по имени класса и имени метода (первый найденный — без учёта перегрузок).</summary>
+        public static UnityMemberInfo? FindMethod(string className, string methodName) =>
+            GetClass(className)?.Methods.Find(m => m.Name == methodName);
+
+        /// <summary>
+        /// Найти метод с учётом перегрузки по количеству аргументов.
+        /// Сначала ищет точное совпадение по имени + числу параметров,
+        /// затем возвращает первый метод с таким именем (fallback).
+        /// </summary>
+        public static UnityMemberInfo? FindMethodByArgCount(string className, string methodName, int argCount)
+        {
+            var cls = GetClass(className);
+            if (cls == null) return null;
+            var exact = cls.Methods.Find(m => m.Name == methodName && m.Parameters.Count == argCount);
+            return exact ?? cls.Methods.Find(m => m.Name == methodName);
+        }
+
+        /// <summary>Найти поле/свойство по имени класса и имени члена.</summary>
+        public static UnityMemberInfo? FindField(string className, string fieldName) =>
+            GetClass(className)?.Fields.Find(f => f.Name == fieldName);
+
+        /// <summary>
+        /// Поиск метода по имени во всех классах реестра (для top-level вызовов без receiver: Destroy, Instantiate и т.п.).
+        /// Сначала по точному совпадению (argCount), затем по имени.
+        /// </summary>
+        public static (UnityClassInfo cls, UnityMemberInfo member)? FindMethodGlobal(string methodName, int argCount)
+        {
+            foreach (var cls in Classes)
+            {
+                var m = cls.Methods.Find(x => x.Name == methodName && x.Parameters.Count == argCount);
+                if (m != null) return (cls, m);
+            }
+            foreach (var cls in Classes)
+            {
+                var m = cls.Methods.Find(x => x.Name == methodName);
+                if (m != null) return (cls, m);
+            }
+            return null;
+        }
+    }
+}

@@ -1200,8 +1200,7 @@ namespace VisualScripting.Core.Parsers
 
             // Unity API: вызов void-метода как самостоятельная инструкция, например transform.Translate(...)
             if (expr is InvocationExpressionSyntax invUnityStmt &&
-                TryResolveUnityMethodCall(invUnityStmt, out var umClassS, out var umOwnerS, out var umMemberS) &&
-                umMemberS.ReturnType == "void")
+                TryResolveUnityMethodCall(invUnityStmt, out var umClassS, out var umOwnerS, out var umMemberS))
             {
                 var callId = CreateUnityMethodCallNode(umClassS, umOwnerS, umMemberS, invUnityStmt, false, null, out var unsupportedCall);
                 if (unsupportedCall || callId == null)
@@ -2374,20 +2373,33 @@ namespace VisualScripting.Core.Parsers
             ownerExpr = "";
             member = null;
 
-            if (inv.Expression is not MemberAccessExpressionSyntax ma)
-                return false;
+            // Случай 1: явный receiver — Object.Destroy(x), transform.GetComponent<T>() и т.п.
+            if (inv.Expression is MemberAccessExpressionSyntax ma)
+            {
+                if (!TryResolveUnityReceiver(ma.Expression, out var cls, out var owner))
+                    return false;
+                var found = UnityLibraryRegistry.FindMethodByArgCount(cls, ma.Name.Identifier.Text, inv.ArgumentList.Arguments.Count);
+                if (found == null) return false;
+                className = cls;
+                ownerExpr = owner;
+                member = found;
+                return true;
+            }
 
-            if (!TryResolveUnityReceiver(ma.Expression, out var cls, out var owner))
-                return false;
+            // Случай 2: bare-вызов без receiver — Destroy(x), Instantiate(x, y, z) и т.п.
+            // MonoBehaviour наследует эти статические методы от Object/Component.
+            if (inv.Expression is IdentifierNameSyntax bareId)
+            {
+                int argCount = inv.ArgumentList.Arguments.Count;
+                var globalResult = UnityLibraryRegistry.FindMethodGlobal(bareId.Identifier.Text, argCount);
+                if (globalResult == null) return false;
+                className = globalResult.Value.cls.ClassName;
+                ownerExpr = "@bare"; // bare-вызов: генератор опустит класс-префикс
+                member    = globalResult.Value.member;
+                return true;
+            }
 
-            var found = UnityLibraryRegistry.FindMethod(cls, ma.Name.Identifier.Text);
-            if (found == null)
-                return false;
-
-            className = cls;
-            ownerExpr = owner;
-            member = found;
-            return true;
+            return false;
         }
 
         /// <summary>Создаёт ноду UnityFieldAccess (чтение поля/свойства Unity API).</summary>
@@ -2928,10 +2940,33 @@ namespace VisualScripting.Core.Parsers
             if (_symbolToNodeId.TryGetValue(name, out var nodeId))
                 return nodeId;
 
-            unsupported = true;
-            _errors.Add(
-                $"Неизвестный идентификатор «{name}» ({FormatUserLocation(id.SyntaxTree, id.Span)}).");
-            return null;
+            // Доступ к self-свойствам MonoBehaviour (gameObject, transform и т.п.) как значению
+            if (KnownUnityReceiverTypes.TryGetValue(name, out var selfClassName))
+            {
+                var selfId = NewId();
+                _graph.Nodes.Add(new NodeData
+                {
+                    Id              = selfId,
+                    Type            = NodeType.UnityFieldAccess,
+                    Value           = "",              // пустой ClassName → self
+                    MemberName      = name,
+                    OwnerExpression = "",              // self-reference
+                    ValueType       = selfClassName
+                });
+                return selfId;
+            }
+
+            // Неизвестный идентификатор — скоревсего поле класса или переданный аргумент.
+            // Генерируем passthrough-ноду: ExpressionOverride = name — генератор подставит имя переменной как есть.
+            var ptId = NewId();
+            _graph.Nodes.Add(new NodeData
+            {
+                Id                 = ptId,
+                Type               = NodeType.VariableRef,
+                ExpressionOverride = name,
+                ValueType          = "object"
+            });
+            return ptId;
         }
 
         /// <summary>Проверяет, что тип в <c>new ...(...)</c> — это Vector3 (с/без namespace UnityEngine).</summary>
@@ -2980,6 +3015,7 @@ namespace VisualScripting.Core.Parsers
             if (args.Count != 0 && args.Count != 2 && args.Count != 3)
             {
                 unsupported = true;
+
                 _errors.Add(
                     $"Неподдерживаемый конструктор Vector3 ({FormatUserLocation(objCreate.SyntaxTree, objCreate.Span)}): ожидается 0, 2 или 3 аргумента.");
                 return null;

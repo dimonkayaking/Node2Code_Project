@@ -239,11 +239,21 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             { "Logic",      "Логика"         },
             { "Flow",       "Управление"     },
             { "Conversion", "Преобразование" },
+            { "Unity",      "Unity"          },
+            { "Snippets",   "Snippets"       },
+            { "Debug",      "Debug"          },
         };
 
         /// <summary>Возвращает русское название категории (если есть) или оригинальное.</summary>
         public static string TranslateCategory(string category) =>
             s_categoryRu.TryGetValue(category, out var ru) ? ru : category;
+
+        /// <summary>
+        /// Returns true if the top-level category is allowed in this GraphView.
+        /// Single source of truth: ShouldHideMenuPath drives both context menu and toolbar panel.
+        /// </summary>
+        public bool IsCategoryAllowed(string category) =>
+            !ShouldHideMenuPath(category + "/_test");
 
         protected virtual bool ShouldHideMenuPath(string path)
         {

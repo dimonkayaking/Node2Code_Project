@@ -30,7 +30,9 @@ namespace CustomVisualScripting.Editor.Nodes.Unity
 
         public override string name =>
             string.IsNullOrEmpty(MemberName) ? "Field Access" :
-            $"{(string.IsNullOrEmpty(OwnerExpr) ? ClassName : OwnerExpr)}.{MemberName}";
+            string.IsNullOrEmpty(OwnerExpr) && string.IsNullOrEmpty(ClassName)
+                ? MemberName                                          // this.gameObject → "gameObject"
+                : $"{(string.IsNullOrEmpty(OwnerExpr) ? ClassName : OwnerExpr)}.{MemberName}";
 
         protected override void Process() { }
 
