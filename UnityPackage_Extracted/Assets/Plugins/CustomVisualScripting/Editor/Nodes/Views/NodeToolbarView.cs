@@ -235,6 +235,9 @@ namespace CustomVisualScripting.Editor.Nodes.Views
             // автоматически делает её доступной и здесь.
             var filtered = _graphView as FilteredCreateMenuBaseGraphView;
 
+            // Поля и Методы пользователя доступны в условиях (чтение значения, exec-порты не подключаются)
+            _contentContainer.Add(CreateMethodsCategoryButton());
+            _contentContainer.Add(CreateFieldsCategoryButton());
             // Unity — специальная кнопка с подкатегориями (как в ShowExecutionContent)
             if (filtered == null || filtered.IsCategoryAllowed("Unity"))
                 _contentContainer.Add(CreateUnityCategoryButton());
@@ -1307,9 +1310,10 @@ namespace CustomVisualScripting.Editor.Nodes.Views
 
             var node = new UnityMethodCallNode
             {
-                ClassName  = cls.ClassName,
-                MemberName = method.Name,
-                OwnerExpr  = DefaultOwnerExpr(cls, method)
+                ClassName        = cls.ClassName,
+                MemberName       = method.Name,
+                OwnerExpr        = DefaultOwnerExpr(cls, method),
+                ActiveParamCount = method.Parameters.Count // выбор перегрузки по числу аргументов
             };
             node.RefreshFromRegistry();
             PlaceAndAddNode(node);
