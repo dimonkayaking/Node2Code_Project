@@ -171,6 +171,9 @@ body.dark .landing-button--ghost {
   background: rgba(255, 255, 255, 0.72);
   border: 1px solid rgba(148, 163, 184, 0.2);
   backdrop-filter: blur(12px);
+  display: grid;
+  place-items: center;
+  text-align: center;
 }
 
 body.dark .landing-hero__stats li {
@@ -181,7 +184,7 @@ body.dark .landing-hero__stats li {
 .landing-hero__stats strong {
   display: block;
   font-size: 1rem;
-  margin-bottom: 0.35rem;
+  margin-bottom: 0;
 }
 
 .landing-hero__stats span {

@@ -28,16 +28,13 @@ const Landing: React.FC = () => {
 
           <ul className="landing-hero__stats">
             <li>
-              <strong>1 модуль</strong>
-              <span>только самое нужное для быстрого старта</span>
+              <strong>Установщик и документация</strong>
             </li>
             <li>
-              <strong>3 урока</strong>
-              <span>установка, интерфейс и подключение плагина</span>
+              <strong>Инструкция</strong>
             </li>
             <li>
-              <strong>Ноды ↔ C#</strong>
-              <span>понятный вход в рабочий процесс</span>
+              <strong>Ноды &lt;--&gt; C#</strong>
             </li>
           </ul>
         </div>
