@@ -82,7 +82,7 @@ const Plugin: React.FC = () => {
           </div>
 
           <div className="install-grid">
-            <a className="install-tile" href="/node2code-plugin.zip" download="плагин.zip">
+            <a className="install-tile" href="/node2code-plugin.unitypackage" download="Node2Code_32.unitypackage">
               <strong>Скачать плагин</strong>
               <span>Единая версия пакета для работы на любой поддерживаемой операционной системе</span>
             </a>
